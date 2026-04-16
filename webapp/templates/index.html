@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neurofeedback BCI - Live Visualization</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Neurofeedback BCI</h1>
+            <div class="header-status">
+                <span id="connection-status" class="status-indicator disconnected">Disconnected</span>
+                <span id="sample-counter">Samples: 0</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Left Panel: Controls -->
+            <aside class="control-panel">
+                <section class="control-section">
+                    <h2>Streaming</h2>
+                    <button id="btn-start" class="btn btn-primary btn-large">Start Streaming</button>
+                    <button id="btn-stop" class="btn btn-danger btn-large" disabled>Stop Streaming</button>
+                </section>
+
+                <section class="control-section">
+                    <h2>Auto-Tracking</h2>
+                    <p class="help-text">When enabled, the system automatically cycles through mental states with optimal strategy.</p>
+                    <button id="btn-tracking" class="btn btn-secondary">Enable Auto-Tracking</button>
+                    <div id="tracking-status" class="tracking-status">
+                        <span class="status-label">Status:</span>
+                        <span id="tracking-state" class="status-value">OFF</span>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Mental State Selection</h2>
+                    <p class="help-text">Click to simulate the corresponding mental state (imagined movement).</p>
+                    <div class="class-buttons">
+                        <button class="btn btn-class" data-class="0">
+                            <span class="class-icon">LH</span>
+                            <span class="class-name">Left Hand</span>
+                        </button>
+                        <button class="btn btn-class" data-class="1">
+                            <span class="class-icon">RH</span>
+                            <span class="class-name">Right Hand</span>
+                        </button>
+                        <button class="btn btn-class" data-class="2">
+                            <span class="class-icon">LL</span>
+                            <span class="class-name">Left Leg</span>
+                        </button>
+                        <button class="btn btn-class" data-class="3">
+                            <span class="class-icon">RL</span>
+                            <span class="class-name">Right Leg</span>
+                        </button>
+                        <button class="btn btn-class btn-rest" data-class="null">
+                            <span class="class-icon">--</span>
+                            <span class="class-name">Rest</span>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Centroid Window</h2>
+                    <p class="help-text">Number of recent samples used to compute cluster centroids.</p>
+                    <div class="slider-container">
+                        <input type="range" id="centroid-slider" min="10" max="200" value="50" step="5">
+                        <span id="centroid-value">50</span>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Current State</h2>
+                    <div class="state-display">
+                        <div class="state-row">
+                            <span class="state-label">Active Class:</span>
+                            <span id="current-class" class="state-value">Rest</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Prediction:</span>
+                            <span id="predicted-class" class="state-value">--</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Confidence:</span>
+                            <span id="confidence" class="state-value">--</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Class Scale:</span>
+                            <span id="class-scale" class="state-value">--</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Strategy Quality:</span>
+                            <span id="strategy-quality" class="state-value">--</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Training Status</h2>
+                    <div class="state-display">
+                        <div class="state-row">
+                            <span class="state-label">Updates:</span>
+                            <span id="num-updates" class="state-value">0</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Labeled Seen:</span>
+                            <span id="labeled-seen" class="state-value">0</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Balanced Acc:</span>
+                            <span id="balanced-acc" class="state-value">--</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Macro F1:</span>
+                            <span id="macro-f1" class="state-value">--</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">RL Enabled:</span>
+                            <span id="rl-enabled" class="state-value">No</span>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+
+            <!-- Center: Visualizations -->
+            <div class="visualization-area">
+                <!-- Manifold Plot -->
+                <div class="viz-panel">
+                    <div class="viz-header">
+                        <h2>Latent Space Projection</h2>
+                        <div class="viz-info">
+                            <span id="cluster-count">Clusters: 0/4</span>
+                            <span id="cluster-separation">MinSep: -- | MeanSep: --</span>
+                        </div>
+                    </div>
+                    <div id="manifold-plot" class="plot-container"></div>
+                </div>
+
+                <!-- Bottom row: Probabilities and Metrics -->
+                <div class="viz-row">
+                    <!-- Probabilities -->
+                    <div class="viz-panel viz-half">
+                        <h2>Class Probabilities</h2>
+                        <div id="probs-plot" class="plot-container-small"></div>
+                    </div>
+
+                    <!-- Metrics over time -->
+                    <div class="viz-panel viz-half">
+                        <h2>Training Progress</h2>
+                        <div id="metrics-plot" class="plot-container-small"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>BCI Neurofeedback Hackathon - Real-time Movement Decoder</p>
+        </footer>
+    </div>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>

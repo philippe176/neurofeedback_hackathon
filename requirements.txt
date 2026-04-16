@@ -1,5 +1,16 @@
+# Core dependencies
 numpy>=1.26
-pyzmq>=25.0
-matplotlib>=3.8
 torch>=2.2
+
+# Emulator (ZMQ-based streaming)
+pyzmq>=25.0
+
+# Visualization
+matplotlib>=3.8
+
+# Web application
+flask>=3.0
+flask-socketio>=5.3
+
+# Testing
 pytest>=8.0

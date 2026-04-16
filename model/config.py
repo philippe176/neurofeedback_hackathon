@@ -15,18 +15,18 @@ class ModelConfig:
     n_classes: int = 4
     dropout: float = 0.10
 
-    # Optimization
-    lr: float = 1e-3
+    # Optimization - slightly higher LR for faster online adaptation
+    lr: float = 2e-3
     weight_decay: float = 1e-4
     grad_clip_norm: float = 1.0
 
-    # Online updates
-    buffer_size: int = 4000
-    batch_size: int = 128
-    update_every: int = 10
-    min_buffer_before_updates: int = 256
-    warmup_labeled_samples: int = 200
-    reward_baseline_alpha: float = 0.05
+    # Online updates - tuned for faster real-time adaptation
+    buffer_size: int = 2000
+    batch_size: int = 64
+    update_every: int = 5
+    min_buffer_before_updates: int = 64
+    warmup_labeled_samples: int = 80
+    reward_baseline_alpha: float = 0.08
 
     # Objective weights
     supervised_weight: float = 1.0
@@ -35,18 +35,19 @@ class ModelConfig:
     smoothness_weight: float = 0.0
 
     # ENZO supervised manifold objective.
+    # Increased projection weights for faster visual separation learning
     lambda_cls: float = 1.0
-    lambda_compact: float = 0.1
-    lambda_sep: float = 0.1
+    lambda_compact: float = 0.15
+    lambda_sep: float = 0.15
     lambda_temp: float = 0.05
-    lambda_proj_cls: float = 0.5
-    lambda_proj_compact: float = 0.05
-    lambda_proj_sep: float = 0.05
+    lambda_proj_cls: float = 1.5       # Increased from 0.5 - projection needs strong supervision
+    lambda_proj_compact: float = 0.20  # Increased from 0.05 - tighter clusters
+    lambda_proj_sep: float = 0.25      # Increased from 0.05 - push clusters apart
     lambda_proj_temp: float = 0.02
 
     latent_sep_margin: float = 0.80
     projection_sep_margin: float = 0.45
-    classification_focal_gamma: float | None = None
+    classification_focal_gamma: float | None = 1.0  # Focal loss helps focus on hard examples
     class_weights: tuple[float, ...] | None = None
 
     # Programmatic reward weights
