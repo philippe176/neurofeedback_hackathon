@@ -6,7 +6,11 @@ from torch import nn
 
 from .config import ModelConfig
 from .losses import (
+    centroid_separation_loss,
+    class_conditional_temporal_loss,
+    compactness_loss,
     entropy_regularization,
+    geometry_statistics,
     reward_weighted_policy_loss,
     supervised_classification_loss,
     temporal_smoothness_loss,
@@ -145,7 +149,49 @@ class OnlineTrainer:
         self.model.train()
         out = self.model(x)
 
-        supervised = supervised_classification_loss(out.logits, y)
+        class_weights = self.cfg.class_weight_tensor(self.device)
+        supervised = supervised_classification_loss(
+            out.logits,
+            y,
+            class_weights=class_weights,
+            focal_gamma=self.cfg.classification_focal_gamma,
+        )
+        projection_supervised = supervised_classification_loss(
+            out.projection_logits,
+            y,
+            class_weights=class_weights,
+            focal_gamma=self.cfg.classification_focal_gamma,
+        )
+
+        compact = compactness_loss(out.penultimate, y, n_classes=self.cfg.n_classes)
+        sep = centroid_separation_loss(
+            out.penultimate,
+            y,
+            margin=self.cfg.latent_sep_margin,
+            n_classes=self.cfg.n_classes,
+        )
+        temporal = class_conditional_temporal_loss(out.penultimate, y)
+
+        proj_compact = compactness_loss(out.projection, y, n_classes=self.cfg.n_classes)
+        proj_sep = centroid_separation_loss(
+            out.projection,
+            y,
+            margin=self.cfg.projection_sep_margin,
+            n_classes=self.cfg.n_classes,
+        )
+        proj_temporal = class_conditional_temporal_loss(out.projection, y)
+
+        manifold_supervised = (
+            self.cfg.lambda_cls * supervised
+            + self.cfg.lambda_compact * compact
+            + self.cfg.lambda_sep * sep
+            + self.cfg.lambda_temp * temporal
+            + self.cfg.lambda_proj_cls * projection_supervised
+            + self.cfg.lambda_proj_compact * proj_compact
+            + self.cfg.lambda_proj_sep * proj_sep
+            + self.cfg.lambda_proj_temp * proj_temporal
+        )
+
         labeled_in_batch = int((y >= 0).sum().item())
 
         rl_enabled = self.labeled_seen >= self.cfg.warmup_labeled_samples
@@ -163,7 +209,7 @@ class OnlineTrainer:
             return _empty_metrics(rl_enabled=False)
 
         total = (
-            self.cfg.supervised_weight * supervised
+            self.cfg.supervised_weight * manifold_supervised
             + self.cfg.policy_weight * policy
             - self.cfg.entropy_weight * entropy
             + self.cfg.smoothness_weight * smoothness
@@ -175,15 +221,48 @@ class OnlineTrainer:
         self.optimizer.step()
         self.num_updates += 1
 
+        with torch.no_grad():
+            within_z, between_z, fisher_z = geometry_statistics(
+                out.penultimate.detach(), y, n_classes=self.cfg.n_classes
+            )
+            within_m, between_m, fisher_m = geometry_statistics(
+                out.projection.detach(), y, n_classes=self.cfg.n_classes
+            )
+            bal_acc, macro_f1, top2, nll, brier, ece = _decoding_metrics(
+                out.logits.detach(),
+                y,
+                self.cfg.n_classes,
+            )
+
         return TrainingMetrics(
             update_applied=True,
             total_loss=float(total.detach().cpu().item()),
-            supervised_loss=float(supervised.detach().cpu().item()),
+            supervised_loss=float(manifold_supervised.detach().cpu().item()),
             policy_loss=float(policy.detach().cpu().item()),
             entropy=float(entropy.detach().cpu().item()),
             smoothness_loss=float(smoothness.detach().cpu().item()),
             labeled_in_batch=labeled_in_batch,
             rl_enabled=rl_enabled,
+            manifold_supervised_loss=float(manifold_supervised.detach().cpu().item()),
+            projection_supervised_loss=float(projection_supervised.detach().cpu().item()),
+            compactness_loss=float(compact.detach().cpu().item()),
+            separation_loss=float(sep.detach().cpu().item()),
+            temporal_consistency_loss=float(temporal.detach().cpu().item()),
+            projection_compactness_loss=float(proj_compact.detach().cpu().item()),
+            projection_separation_loss=float(proj_sep.detach().cpu().item()),
+            projection_temporal_loss=float(proj_temporal.detach().cpu().item()),
+            within_class_var_z=float(within_z.detach().cpu().item()),
+            between_class_var_z=float(between_z.detach().cpu().item()),
+            fisher_ratio_z=float(fisher_z.detach().cpu().item()),
+            within_class_var_m=float(within_m.detach().cpu().item()),
+            between_class_var_m=float(between_m.detach().cpu().item()),
+            fisher_ratio_m=float(fisher_m.detach().cpu().item()),
+            balanced_accuracy=bal_acc,
+            macro_f1=macro_f1,
+            top2_accuracy=top2,
+            negative_log_likelihood=nll,
+            brier_score=brier,
+            expected_calibration_error=ece,
         )
 
     def _update_reward_baseline(self, reward: float) -> None:
@@ -206,3 +285,70 @@ def _empty_metrics(rl_enabled: bool) -> TrainingMetrics:
         labeled_in_batch=0,
         rl_enabled=rl_enabled,
     )
+
+
+def _decoding_metrics(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    n_classes: int,
+    ece_bins: int = 10,
+) -> tuple[float, float, float, float, float, float]:
+    mask = labels >= 0
+    if not torch.any(mask):
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+
+    logits_l = logits[mask]
+    labels_l = labels[mask]
+    probs = torch.softmax(logits_l, dim=-1)
+    log_probs = torch.log_softmax(logits_l, dim=-1)
+    preds = torch.argmax(probs, dim=-1)
+
+    # Balanced accuracy and macro F1 over classes with support in this batch.
+    recalls: list[float] = []
+    f1s: list[float] = []
+    for cls in range(int(n_classes)):
+        y_true = labels_l == cls
+        support = int(y_true.sum().item())
+        if support == 0:
+            continue
+
+        y_pred = preds == cls
+        tp = int((y_true & y_pred).sum().item())
+        fn = int((y_true & ~y_pred).sum().item())
+        fp = int((~y_true & y_pred).sum().item())
+
+        recall = tp / max(1, tp + fn)
+        precision = tp / max(1, tp + fp)
+        f1 = 2.0 * precision * recall / max(1e-8, precision + recall)
+
+        recalls.append(recall)
+        f1s.append(f1)
+
+    balanced_accuracy = float(np.mean(recalls)) if recalls else 0.0
+    macro_f1 = float(np.mean(f1s)) if f1s else 0.0
+
+    topk = min(2, probs.shape[-1])
+    top2_idx = torch.topk(probs, k=topk, dim=-1).indices
+    top2_match = (top2_idx == labels_l.unsqueeze(1)).any(dim=1)
+    top2_accuracy = float(top2_match.float().mean().item())
+
+    nll = float((-log_probs.gather(1, labels_l.unsqueeze(1)).mean()).item())
+
+    one_hot = torch.nn.functional.one_hot(labels_l, num_classes=probs.shape[-1]).to(probs.dtype)
+    brier = float(((probs - one_hot).pow(2).sum(dim=-1).mean()).item())
+
+    conf, _ = probs.max(dim=-1)
+    acc = (preds == labels_l).to(probs.dtype)
+    ece = 0.0
+    for i in range(max(1, int(ece_bins))):
+        lo = i / ece_bins
+        hi = (i + 1) / ece_bins
+        in_bin = (conf >= lo) & (conf < hi if i < ece_bins - 1 else conf <= hi)
+        if not torch.any(in_bin):
+            continue
+        frac = float(in_bin.float().mean().item())
+        avg_conf = float(conf[in_bin].mean().item())
+        avg_acc = float(acc[in_bin].mean().item())
+        ece += frac * abs(avg_conf - avg_acc)
+
+    return balanced_accuracy, macro_f1, top2_accuracy, nll, brier, float(ece)

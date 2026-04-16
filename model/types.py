@@ -24,6 +24,8 @@ class StreamSample:
 class ModelOutput:
     logits: torch.Tensor
     probs: torch.Tensor
+    projection_logits: torch.Tensor
+    projection_probs: torch.Tensor
     penultimate: torch.Tensor
     projection: torch.Tensor
 
@@ -48,6 +50,26 @@ class TrainingMetrics:
     smoothness_loss: float
     labeled_in_batch: int
     rl_enabled: bool
+    manifold_supervised_loss: float = 0.0
+    projection_supervised_loss: float = 0.0
+    compactness_loss: float = 0.0
+    separation_loss: float = 0.0
+    temporal_consistency_loss: float = 0.0
+    projection_compactness_loss: float = 0.0
+    projection_separation_loss: float = 0.0
+    projection_temporal_loss: float = 0.0
+    within_class_var_z: float = 0.0
+    between_class_var_z: float = 0.0
+    fisher_ratio_z: float = 0.0
+    within_class_var_m: float = 0.0
+    between_class_var_m: float = 0.0
+    fisher_ratio_m: float = 0.0
+    balanced_accuracy: float = 0.0
+    macro_f1: float = 0.0
+    top2_accuracy: float = 0.0
+    negative_log_likelihood: float = 0.0
+    brier_score: float = 0.0
+    expected_calibration_error: float = 0.0
 
 
 @dataclass(slots=True)

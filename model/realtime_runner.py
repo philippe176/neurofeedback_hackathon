@@ -239,6 +239,10 @@ def _print_heartbeat(step, trainer: OnlineTrainer) -> None:
             f" | loss={step.training.total_loss:.4f}"
             f" sup={step.training.supervised_loss:.4f}"
             f" pol={step.training.policy_loss:.4f}"
+            f" ba={step.training.balanced_accuracy:.2f}"
+            f" f1={step.training.macro_f1:.2f}"
+            f" fz={step.training.fisher_ratio_z:.2f}"
+            f" fm={step.training.fisher_ratio_m:.2f}"
             f" rl={'on' if step.training.rl_enabled else 'off'}"
         )
 

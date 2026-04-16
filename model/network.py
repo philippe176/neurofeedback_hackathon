@@ -41,6 +41,7 @@ class MovementDecoder(nn.Module):
         self.penultimate_head = nn.Linear(hidden_dim, embedding_dim)
         self.classifier_head = nn.Linear(embedding_dim, n_classes)
         self.projection_head = nn.Linear(embedding_dim, projection_dim)
+        self.projection_classifier_head = nn.Linear(projection_dim, n_classes)
 
     def forward(self, x: torch.Tensor) -> ModelOutput:
         if x.ndim == 1:
@@ -53,10 +54,14 @@ class MovementDecoder(nn.Module):
         logits = self.classifier_head(penultimate)
         probs = torch.softmax(logits, dim=-1)
         projection = self.projection_head(penultimate)
+        projection_logits = self.projection_classifier_head(projection)
+        projection_probs = torch.softmax(projection_logits, dim=-1)
 
         return ModelOutput(
             logits=logits,
             probs=probs,
+            projection_logits=projection_logits,
+            projection_probs=projection_probs,
             penultimate=penultimate,
             projection=projection,
         )

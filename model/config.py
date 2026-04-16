@@ -30,9 +30,24 @@ class ModelConfig:
 
     # Objective weights
     supervised_weight: float = 1.0
-    policy_weight: float = 0.20
+    policy_weight: float = 0.05
     entropy_weight: float = 0.01
-    smoothness_weight: float = 0.02
+    smoothness_weight: float = 0.0
+
+    # ENZO supervised manifold objective.
+    lambda_cls: float = 1.0
+    lambda_compact: float = 0.1
+    lambda_sep: float = 0.1
+    lambda_temp: float = 0.05
+    lambda_proj_cls: float = 0.5
+    lambda_proj_compact: float = 0.05
+    lambda_proj_sep: float = 0.05
+    lambda_proj_temp: float = 0.02
+
+    latent_sep_margin: float = 0.80
+    projection_sep_margin: float = 0.45
+    classification_focal_gamma: float | None = None
+    class_weights: tuple[float, ...] | None = None
 
     # Programmatic reward weights
     reward_confidence_weight: float = 0.35
@@ -66,8 +81,37 @@ class ModelConfig:
             raise ValueError("batch_size must be at least 2")
         if self.update_every < 1:
             raise ValueError("update_every must be >= 1")
+        if self.latent_sep_margin <= 0.0:
+            raise ValueError("latent_sep_margin must be > 0")
+        if self.projection_sep_margin <= 0.0:
+            raise ValueError("projection_sep_margin must be > 0")
+        if self.classification_focal_gamma is not None and self.classification_focal_gamma < 0.0:
+            raise ValueError("classification_focal_gamma must be >= 0")
+        if self.class_weights is not None:
+            if len(self.class_weights) != self.n_classes:
+                raise ValueError("class_weights must have length n_classes")
+            if any(w <= 0.0 for w in self.class_weights):
+                raise ValueError("class_weights entries must be > 0")
+
+        for name in (
+            "lambda_cls",
+            "lambda_compact",
+            "lambda_sep",
+            "lambda_temp",
+            "lambda_proj_cls",
+            "lambda_proj_compact",
+            "lambda_proj_sep",
+            "lambda_proj_temp",
+        ):
+            if getattr(self, name) < 0.0:
+                raise ValueError(f"{name} must be >= 0")
 
     def resolve_device(self) -> torch.device:
         if self.device != "auto":
             return torch.device(self.device)
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def class_weight_tensor(self, device: torch.device) -> torch.Tensor | None:
+        if self.class_weights is None:
+            return None
+        return torch.tensor(self.class_weights, dtype=torch.float32, device=device)

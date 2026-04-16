@@ -24,3 +24,13 @@ def test_model_config_resolve_device_cpu() -> None:
     device = cfg.resolve_device()
     assert isinstance(device, torch.device)
     assert str(device) == "cpu"
+
+
+def test_model_config_rejects_invalid_class_weights_length() -> None:
+    with pytest.raises(ValueError, match="class_weights"):
+        ModelConfig(n_classes=4, class_weights=(1.0, 1.0))
+
+
+def test_model_config_rejects_negative_focal_gamma() -> None:
+    with pytest.raises(ValueError, match="classification_focal_gamma"):
+        ModelConfig(classification_focal_gamma=-0.1)

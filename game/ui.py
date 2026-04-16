@@ -22,6 +22,20 @@ CLASS_COLORS = {
     3: "#f7768e",
 }
 
+SHORT_CLASS_NAMES = {
+    0: "LH",
+    1: "RH",
+    2: "LL",
+    3: "RL",
+}
+
+CLASS_HINTS = {
+    0: "Imagine LEFT HAND movement",
+    1: "Imagine RIGHT HAND movement",
+    2: "Imagine LEFT LEG movement",
+    3: "Imagine RIGHT LEG movement",
+}
+
 
 class RhythmConsoleHUD:
     """Minimal terminal HUD for rhythm prompts and hit feedback."""
@@ -81,12 +95,19 @@ class RhythmGameDashboard:
         self._timing_hits: deque[bool] = deque(maxlen=self.history_len)
 
         plt.ion()
-        self.fig = plt.figure(figsize=(14, 8), constrained_layout=False)
-        gs = self.fig.add_gridspec(3, 2, width_ratios=[2.2, 1.25], height_ratios=[1.1, 1.0, 1.0])
+        self.fig = plt.figure(figsize=(15, 10), constrained_layout=False)
+        gs = self.fig.add_gridspec(
+            5,
+            2,
+            width_ratios=[2.15, 1.3],
+            height_ratios=[1.2, 1.0, 1.0, 1.0, 1.0],
+        )
         self.ax_space = self.fig.add_subplot(gs[:, 0])
         self.ax_cue = self.fig.add_subplot(gs[0, 1])
-        self.ax_metrics = self.fig.add_subplot(gs[1, 1])
-        self.ax_trend = self.fig.add_subplot(gs[2, 1])
+        self.ax_decoder = self.fig.add_subplot(gs[1, 1])
+        self.ax_components = self.fig.add_subplot(gs[2, 1])
+        self.ax_metrics = self.fig.add_subplot(gs[3, 1])
+        self.ax_trend = self.fig.add_subplot(gs[4, 1])
 
     def update(self, step: InferenceStep) -> None:
         if step.game_prompt_id is None:
@@ -124,6 +145,8 @@ class RhythmGameDashboard:
 
         self._draw_space(points, preds, correct, confidences)
         self._draw_cue(step)
+        self._draw_decoder(step)
+        self._draw_components(step)
         self._draw_metrics(preds, targets, correct, timing_hits, margins)
         self._draw_trends(rewards, margins, correct)
 
@@ -227,32 +250,39 @@ class RhythmGameDashboard:
 
         self.ax_cue.text(
             0.04,
-            0.86,
-            "NOW THINK:",
+            0.92,
+            "TASK COACH",
+            color="#dbe2ff",
+            fontsize=12,
+            fontweight="bold",
+        )
+        self.ax_cue.text(
+            0.04,
+            0.80,
+            "NOW:",
             color="#b7c3ee",
             fontsize=11,
             fontweight="bold",
         )
         self.ax_cue.text(
             0.04,
-            0.66,
+            0.67,
             target_name,
             color=target_color,
-            fontsize=22,
+            fontsize=20,
             fontweight="bold",
         )
-
         self.ax_cue.text(
             0.04,
-            0.56,
-            f"Window opens in: {to_window:.2f}s",
-            color="#c7d1f2",
+            0.59,
+            CLASS_HINTS.get(target, "Hold a stable class-specific intention"),
+            color="#d4dcfb",
             fontsize=9,
         )
 
         self.ax_cue.text(
-            0.56,
-            0.86,
+            0.57,
+            0.80,
             "UP NEXT:",
             color="#b7c3ee",
             fontsize=10,
@@ -260,15 +290,23 @@ class RhythmGameDashboard:
         )
         self.ax_cue.text(
             0.56,
-            0.66,
+            0.67,
             next_target_name,
             color=next_target_color,
-            fontsize=15,
+            fontsize=14,
             fontweight="bold",
         )
         self.ax_cue.text(
             0.56,
+            0.59,
+            CLASS_HINTS.get(next_target, "Prepare next class intention"),
+            color="#d4dcfb",
+            fontsize=8,
+        )
+
+        self.ax_cue.text(
             0.56,
+            0.52,
             f"Starts in {to_next:.2f}s",
             color="#c7d1f2",
             fontsize=9,
@@ -277,11 +315,14 @@ class RhythmGameDashboard:
         progress = float(step.game_prompt_progress) if step.game_prompt_progress is not None else 0.0
         progress = float(np.clip(progress, 0.0, 1.0))
 
-        self.ax_cue.barh([0.34], [1.0], height=0.10, color="#232d4d")
-        self.ax_cue.barh([0.34], [progress], height=0.10, color="#4cc9f0")
+        self.ax_cue.text(0.04, 0.48, "Prompt timeline", color="#b7c3ee", fontsize=9)
+        self.ax_cue.barh([0.43], [1.0], height=0.08, color="#232d4d")
+        self.ax_cue.barh([0.43], [progress], height=0.08, color="#4cc9f0")
         win_text = "WINDOW OPEN" if step.game_in_window else "WINDOW CLOSED"
         win_color = "#8be9a3" if step.game_in_window else "#f8c555"
-        self.ax_cue.text(0.04, 0.43, win_text, color=win_color, fontsize=10, fontweight="bold")
+        countdown = "Act now" if step.game_in_window else f"Window opens in {to_window:.2f}s"
+        self.ax_cue.text(0.04, 0.34, win_text, color=win_color, fontsize=10, fontweight="bold")
+        self.ax_cue.text(0.28, 0.34, countdown, color="#e5ecff", fontsize=9)
 
         if step.game_label_correct:
             status = "Correct label captured"
@@ -293,13 +334,129 @@ class RhythmGameDashboard:
         if step.game_timing_hit:
             status += "  |  timing bonus"
 
-        self.ax_cue.text(0.04, 0.22, status, color=status_color, fontsize=10)
+        self.ax_cue.text(0.04, 0.21, status, color=status_color, fontsize=10)
         self.ax_cue.text(
             0.04,
-            0.08,
-            "Goal: maximize label distinction. Start preparing the UP NEXT class early.",
+            0.10,
+            "1) Follow NOW class in the active window  2) Prime UP NEXT early",
             color="#c7d1f2",
             fontsize=9,
+        )
+        self.ax_cue.text(
+            0.04,
+            0.04,
+            "Primary objective: class distinction. Timing adds bonus only.",
+            color="#9fb0df",
+            fontsize=8,
+        )
+
+    def _draw_decoder(self, step: InferenceStep) -> None:
+        self.ax_decoder.cla()
+        self.ax_decoder.set_facecolor("#141a30")
+
+        probs = np.asarray(step.probabilities, dtype=float).reshape(-1)
+        n = min(4, probs.size)
+        xs = np.arange(n)
+        colors = [CLASS_COLORS.get(i, "#7f8ab3") for i in range(n)]
+        bars = self.ax_decoder.bar(xs, probs[:n], color=colors, alpha=0.85)
+
+        target = int(step.game_target_class) if step.game_target_class is not None else -1
+        pred = int(step.predicted_class)
+        for i, bar in enumerate(bars):
+            if i == target:
+                bar.set_linewidth(2.0)
+                bar.set_edgecolor("#f7fbff")
+            if i == pred:
+                bar.set_hatch("//")
+
+        self.ax_decoder.set_ylim(0.0, 1.0)
+        self.ax_decoder.set_xticks(xs)
+        self.ax_decoder.set_xticklabels([SHORT_CLASS_NAMES.get(i, str(i)) for i in xs], color="#c6d2ff")
+        self.ax_decoder.tick_params(axis="y", colors="#9aa7d8")
+        self.ax_decoder.grid(alpha=0.18, axis="y")
+
+        legend = "white border = target, hatched = model prediction"
+        self.ax_decoder.set_title(
+            f"Decoder confidence  |  {legend}",
+            color="#dbe2ff",
+            fontsize=10,
+        )
+
+        y_text = 0.95
+        self.ax_decoder.text(
+            0.02,
+            y_text,
+            f"pred={CLASS_NAMES.get(pred, str(pred))} ({step.confidence:.2f})",
+            transform=self.ax_decoder.transAxes,
+            color="#dbe2ff",
+            fontsize=9,
+            va="top",
+        )
+        if target >= 0:
+            self.ax_decoder.text(
+                0.02,
+                y_text - 0.12,
+                f"target={CLASS_NAMES.get(target, str(target))}",
+                transform=self.ax_decoder.transAxes,
+                color=CLASS_COLORS.get(target, "#dbe2ff"),
+                fontsize=9,
+                va="top",
+            )
+
+    def _draw_components(self, step: InferenceStep) -> None:
+        self.ax_components.cla()
+        self.ax_components.set_facecolor("#141a30")
+
+        components = dict(step.game_reward_components or {})
+        if not components:
+            self.ax_components.set_xticks([])
+            self.ax_components.set_yticks([])
+            self.ax_components.text(
+                0.04,
+                0.5,
+                "Reward components not available yet",
+                transform=self.ax_components.transAxes,
+                color="#c7d1f2",
+                fontsize=9,
+                va="center",
+            )
+            self.ax_components.set_title("Reward breakdown", color="#dbe2ff", fontsize=10)
+            return
+
+        ordered_keys = [
+            "correctness",
+            "margin",
+            "separability",
+            "timing",
+            "stability",
+            "aux",
+            "hit_bonus",
+            "confusion_penalty",
+        ]
+        labels: list[str] = []
+        values: list[float] = []
+        for key in ordered_keys:
+            if key not in components:
+                continue
+            value = float(components[key])
+            if key == "confusion_penalty":
+                value = -value
+            labels.append(key.replace("_", " "))
+            values.append(float(np.clip(value, -1.0, 1.0)))
+
+        y = np.arange(len(values))
+        colors = ["#ff8b8b" if v < 0.0 else "#8be9a3" for v in values]
+        self.ax_components.barh(y, values, color=colors, alpha=0.85)
+        self.ax_components.axvline(0.0, color="#93a3d6", linewidth=1.0, alpha=0.6)
+        self.ax_components.set_yticks(y)
+        self.ax_components.set_yticklabels(labels, color="#c6d2ff", fontsize=8)
+        self.ax_components.set_xlim(-1.0, 1.0)
+        self.ax_components.tick_params(axis="x", colors="#9aa7d8")
+        self.ax_components.grid(alpha=0.15, axis="x")
+        self.ax_components.set_title(
+            f"Reward breakdown (sample reward={step.reward:.2f})",
+            color="#dbe2ff",
+            fontsize=10,
         )
 
     def _draw_metrics(
@@ -326,14 +483,15 @@ class RhythmGameDashboard:
         self.ax_metrics.bar(xs, per_class, color=colors, alpha=0.85)
         self.ax_metrics.set_ylim(0.0, 1.0)
         self.ax_metrics.set_xticks(xs)
-        self.ax_metrics.set_xticklabels(["LH", "RH", "LL", "RL"], color="#c6d2ff")
+        self.ax_metrics.set_xticklabels([SHORT_CLASS_NAMES[c] for c in range(4)], color="#c6d2ff")
         self.ax_metrics.tick_params(axis="y", colors="#9aa7d8")
+        self.ax_metrics.grid(alpha=0.18, axis="y")
 
         corr = float(np.mean(correct[-50:])) if correct.size > 0 else 0.0
         timing = float(np.mean(timing_hits[-50:])) if timing_hits.size > 0 else 0.0
         margin_mean = float(np.mean(margins[-50:])) if margins.size > 0 else 0.0
         self.ax_metrics.set_title(
-            f"Distinction metrics  |  correct={corr:.2f}  timing-hit={timing:.2f}  margin={margin_mean:.2f}",
+            f"Class distinction quality (recent)  |  correct={corr:.2f}  timing={timing:.2f}  margin={margin_mean:.2f}",
             color="#dbe2ff",
             fontsize=10,
         )

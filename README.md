@@ -259,8 +259,13 @@ A first implementation of an online decoder and manifold visualizer now lives in
 `model/`. It expects one embedding vector per timestep and trains in the loop
 with a hybrid objective:
 
-- supervised classification loss on labeled samples
-- reward-weighted policy loss from programmatic reward signals
+- supervised manifold objective (ENZO spec):
+  - latent classification loss
+  - latent compactness + centroid separation
+  - class-conditional temporal consistency
+  - direct projection classification loss
+  - projection compactness + centroid separation + temporal consistency
+- reward-weighted policy loss as a secondary online adaptation signal
 
 The default stream key is `data` (compatible with the current emulator), but
 you can switch to a dedicated embedding field from an upstream encoder.
@@ -329,7 +334,9 @@ Fine-grain control is available with:
 When visualization is enabled, game mode opens a richer dashboard with:
 
 - a live embedding-space panel showing class cluster separation progress
-- a large prompt cue panel indicating what to think now and what comes next
+- a coaching panel showing NOW vs UP NEXT intentions and countdowns
+- a decoder confidence panel (target-highlighted vs predicted class)
+- a reward-breakdown panel for per-sample feedback components
 - distinction metrics (per-class correctness, dominant confusions)
 - trend charts for reward, margin, and correctness over time
 
