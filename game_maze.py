@@ -1,5 +1,5 @@
 """
-game.py — Pygame maze game driven by BCI probability output.
+game_maze.py — Pygame maze game driven by BCI probability output.
 
 Public interface
 ----------------
@@ -24,7 +24,6 @@ This file has zero knowledge of ZMQ, LDA, or raw neural data.
 from __future__ import annotations
 
 import threading
-import time
 
 import numpy as np
 import pygame
@@ -150,10 +149,10 @@ def _overlaps_wall(cx: float, cy: float, r: float) -> bool:
             if ty < 0 or ty >= MAZE_ROWS or tx < 0 or tx >= MAZE_COLS:
                 return True   # out of bounds counts as wall
             if MAZE_GRID[ty][tx] == 1:
-                tile_left  = tx * TILE
-                tile_top   = ty * TILE
-                near_x = max(tile_left,        min(cx, tile_left + TILE))
-                near_y = max(tile_top,         min(cy, tile_top  + TILE))
+                tile_left = tx * TILE
+                tile_top  = ty * TILE
+                near_x = max(tile_left, min(cx, tile_left + TILE))
+                near_y = max(tile_top,  min(cy, tile_top  + TILE))
                 if (cx - near_x) ** 2 + (cy - near_y) ** 2 < r * r:
                     return True
     return False
@@ -169,16 +168,19 @@ def _draw_arrow(surf: pygame.Surface, color: tuple, cx: int, cy: int,
                 direction: int, size: int) -> None:
     """Draw a solid directional triangle arrow on *surf*."""
     dx, dy = DIR_VEC[direction]
-    # Tip of the arrow
-    tip  = (cx + dx * size,      cy + dy * size)
-    # Two base corners (perpendicular to direction)
-    perp = (-dy, dx)
-    base_hw = size * 0.55
-    b1 = (cx - dx * size * 0.3 + perp[0] * base_hw,
-          cy - dy * size * 0.3 + perp[1] * base_hw)
-    b2 = (cx - dx * size * 0.3 - perp[0] * base_hw,
-          cy - dy * size * 0.3 - perp[1] * base_hw)
+    tip    = (cx + dx * size, cy + dy * size)
+    perp   = (-dy, dx)
+    hw     = size * 0.55
+    b1 = (cx - dx * size * 0.3 + perp[0] * hw, cy - dy * size * 0.3 + perp[1] * hw)
+    b2 = (cx - dx * size * 0.3 - perp[0] * hw, cy - dy * size * 0.3 - perp[1] * hw)
     pygame.draw.polygon(surf, color, [tip, b1, b2])
+
+
+def _fmt_time(seconds: float) -> str:
+    """Format elapsed time as  mm:ss.xx  (e.g. '01:23.45')."""
+    m  = int(seconds) // 60
+    s  = seconds - m * 60
+    return f"{m:02d}:{s:05.2f}"
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +208,6 @@ class Player:
 
     @property
     def tile(self) -> tuple[int, int]:
-        """Tile coordinates of the player's centre."""
         return (int(self.x // TILE), int(self.y // TILE))
 
 
@@ -217,16 +218,23 @@ class Player:
 class MazeGame:
     def __init__(self) -> None:
         self.probs: np.ndarray = np.full(4, 0.25)
-        self.player  = Player(*START_TILE)
-        self.running = True
-        self.won     = False
+        self.player    = Player(*START_TILE)
+        self.running   = True
+        self.won       = False
         self._win_timer = 0.0
+
+        # Timer
+        self._elapsed:   float       = 0.0
+        self._best_time: float | None = None
+        self._final_time: float | None = None   # time frozen at goal
+        self._timer_active = True
 
         # Preload fonts once (pygame must be initialised first)
         self._font_big   = pygame.font.SysFont("monospace", 20, bold=True)
         self._font_small = pygame.font.SysFont("monospace", 13)
-        self._font_win   = pygame.font.SysFont("monospace", 58, bold=True)
+        self._font_win   = pygame.font.SysFont("monospace", 52, bold=True)
         self._font_sub   = pygame.font.SysFont("monospace", 22)
+        self._font_timer = pygame.font.SysFont("monospace", 18, bold=True)
 
         # Pulsing goal animation state
         self._goal_pulse = 0.0
@@ -238,6 +246,10 @@ class MazeGame:
     def tick(self, dt: float) -> None:
         self._goal_pulse = (self._goal_pulse + dt * 3.0) % (2 * np.pi)
 
+        # Advance timer while playing
+        if self._timer_active and not self.won:
+            self._elapsed += dt
+
         if self.won:
             self._win_timer -= dt
             if self._win_timer <= 0.0:
@@ -247,22 +259,33 @@ class MazeGame:
         with _lock:
             probs = self.probs.copy()
 
-        predicted_class = int(np.argmax(probs))
-        confidence      = float(probs[predicted_class])
+        if np.allclose(probs, probs[0]):
+            predicted_class = None
+            confidence = 0.0
+        else:
+            predicted_class = int(np.argmax(probs))
+            confidence = float(probs[predicted_class])
 
-        if confidence > 0.0:
+        if predicted_class is not None and confidence > 0.0:
             ddx, ddy = DIR_VEC[predicted_class]
             speed = MAX_SPEED * confidence
             self.player.try_move(ddx * speed * dt, ddy * speed * dt)
 
         if self.player.tile == GOAL_TILE:
-            self.won       = True
-            self._win_timer = 2.8
+            self.won           = True
+            self._win_timer    = 3.0
+            self._timer_active = False
+            self._final_time   = self._elapsed
+            if self._best_time is None or self._elapsed < self._best_time:
+                self._best_time = self._elapsed
 
     def _reset(self) -> None:
         self.player.reset(*START_TILE)
-        self.won        = False
-        self._win_timer = 0.0
+        self.won           = False
+        self._win_timer    = 0.0
+        self._elapsed      = 0.0
+        self._timer_active = True
+        self._final_time   = None
 
     # ------------------------------------------------------------------
     # Draw
@@ -306,129 +329,163 @@ class MazeGame:
         with _lock:
             probs = self.probs.copy()
 
-        predicted_class = int(np.argmax(probs))
-        confidence      = float(probs[predicted_class])
-        color           = _confidence_color(confidence)
+        if np.allclose(probs, probs[0]):
+            predicted_class = None
+            confidence = 0.0
+        else:
+            predicted_class = int(np.argmax(probs))
+            confidence = float(probs[predicted_class])
+        color = _confidence_color(confidence)
 
         px = int(self.player.x)
         py = int(self.player.y)
 
         # Soft glow halo
-        glow_r   = PLAYER_R + 8
+        glow_r    = PLAYER_R + 8
         glow_surf = pygame.Surface((glow_r * 2 + 2, glow_r * 2 + 2), pygame.SRCALPHA)
-        glow_col  = (*color, max(0, int(90 * confidence)))
-        pygame.draw.circle(glow_surf, glow_col, (glow_r + 1, glow_r + 1), glow_r)
+        pygame.draw.circle(glow_surf, (*color, max(0, int(90 * confidence))),
+                           (glow_r + 1, glow_r + 1), glow_r)
         screen.blit(glow_surf, (px - glow_r - 1, py - glow_r - 1))
 
         # Main body
         pygame.draw.circle(screen, color, (px, py), PLAYER_R)
 
         # Specular highlight
-        hi_r = max(2, PLAYER_R // 4)
-        pygame.draw.circle(screen, (255, 255, 255), (px - 3, py - 4), hi_r)
+        pygame.draw.circle(screen, (255, 255, 255), (px - 3, py - 4),
+                           max(2, PLAYER_R // 4))
 
         # Direction arrow growing with confidence
-        arrow_size = int(6 + confidence * 12)
         arrow_color = (255, 255, 255) if confidence > 0.5 else (180, 180, 180)
-        _draw_arrow(screen, arrow_color, px, py, predicted_class, arrow_size)
+        if predicted_class is not None:
+            _draw_arrow(screen, arrow_color, px, py, predicted_class,
+                        size=int(6 + confidence * 12))
 
     def _draw_hud(self, screen: pygame.Surface) -> None:
         with _lock:
             probs = self.probs.copy()
 
-        predicted_class = int(np.argmax(probs))
-        confidence      = float(probs[predicted_class])
-        color           = _confidence_color(confidence)
+        if np.allclose(probs, probs[0]):
+            predicted_class = None
+            confidence = 0.0
+        else:
+            predicted_class = int(np.argmax(probs))
+            confidence = float(probs[predicted_class])
+        color = _confidence_color(confidence)
 
         # Background panel
-        hud_rect = pygame.Rect(0, MAZE_H, WIN_W, HUD_H)
-        pygame.draw.rect(screen, COL_HUD_BG, hud_rect)
+        pygame.draw.rect(screen, COL_HUD_BG, (0, MAZE_H, WIN_W, HUD_H))
         pygame.draw.line(screen, COL_HUD_LINE, (0, MAZE_H), (WIN_W, MAZE_H), 1)
 
         y0 = MAZE_H + 12
 
-        # --- Left section: class label + direction arrow icon ---
-        label_surf = self._font_big.render(CLASS_NAMES[predicted_class], True, color)
+        # --- Left: class label + arrow icon ---
+        label = "Idle" if predicted_class is None else CLASS_NAMES[predicted_class]
+        label_surf = self._font_big.render(label, True, color)
         screen.blit(label_surf, (18, y0))
+        if predicted_class is not None:
+            _draw_arrow(screen, color,
+                        18 + label_surf.get_width() + 30, y0 + 10,
+                        predicted_class, size=12)
 
-        arrow_icon_cx = 18 + label_surf.get_width() + 30
-        arrow_icon_cy = y0 + 10
-        _draw_arrow(screen, color, arrow_icon_cx, arrow_icon_cy,
-                    predicted_class, size=12)
-
-        # --- Centre section: confidence bar ---
+        # --- Centre: confidence bar ---
         bar_x, bar_y = 240, y0 + 2
-        bar_w, bar_h  = 330, 16
+        bar_w, bar_h  = 260, 16
         filled_w = int(bar_w * confidence)
 
-        pygame.draw.rect(screen, (30, 30, 50), (bar_x, bar_y, bar_w, bar_h),
-                         border_radius=3)
+        pygame.draw.rect(screen, (30, 30, 50),   (bar_x, bar_y, bar_w, bar_h), border_radius=3)
         if filled_w > 0:
-            pygame.draw.rect(screen, color, (bar_x, bar_y, filled_w, bar_h),
-                             border_radius=3)
-        pygame.draw.rect(screen, (70, 70, 110), (bar_x, bar_y, bar_w, bar_h),
-                         1, border_radius=3)
+            pygame.draw.rect(screen, color,      (bar_x, bar_y, filled_w, bar_h), border_radius=3)
+        pygame.draw.rect(screen, (70, 70, 110),  (bar_x, bar_y, bar_w, bar_h), 1, border_radius=3)
 
-        conf_surf = self._font_small.render(
-            f"confidence  {confidence:.2f}", True, COL_DIMTEXT)
-        screen.blit(conf_surf, (bar_x, bar_y + bar_h + 5))
+        screen.blit(
+            self._font_small.render(f"confidence  {confidence:.2f}", True, COL_DIMTEXT),
+            (bar_x, bar_y + bar_h + 5),
+        )
 
-        # --- Right section: all four probability mini-bars ---
-        short = ["LH", "RH", "LL", "RL"]
-        mini_w, mini_h, gap = 28, 10, 6
-        mx0 = bar_x + bar_w + 28
+        # --- Mini prob bars (4 classes) ---
+        mini_w, mini_h, gap = 26, 10, 5
+        mx0 = bar_x + bar_w + 20
         my0 = y0 + 2
 
-        for i, (p, name) in enumerate(zip(probs, short)):
-            bx = mx0 + i * (mini_w + gap)
-            filled = int(mini_w * p)
-            hi = (i == predicted_class)
-            bg_col   = (30, 30, 50) if not hi else (35, 40, 65)
-            bar_col  = (80, 100, 160) if not hi else (200, 220, 255)
-            pygame.draw.rect(screen, bg_col,  (bx, my0, mini_w, mini_h),
-                             border_radius=2)
-            if filled > 0:
-                pygame.draw.rect(screen, bar_col, (bx, my0, filled, mini_h),
-                                 border_radius=2)
-            pygame.draw.rect(screen, (65, 65, 105), (bx, my0, mini_w, mini_h),
-                             1, border_radius=2)
-            lbl = self._font_small.render(name, True,
-                                          COL_TEXT if hi else COL_DIMTEXT)
-            screen.blit(lbl, (bx + (mini_w - lbl.get_width()) // 2,
-                               my0 + mini_h + 3))
+        for i, (p, name) in enumerate(zip(probs, ["LH", "RH", "LL", "RL"])):
+            bx  = mx0 + i * (mini_w + gap)
+            hi = (predicted_class is not None and i == predicted_class)
+            pygame.draw.rect(screen, (35, 40, 65) if hi else (30, 30, 50),
+                             (bx, my0, mini_w, mini_h), border_radius=2)
+            if int(mini_w * p) > 0:
+                pygame.draw.rect(screen, (200, 220, 255) if hi else (80, 100, 160),
+                                 (bx, my0, int(mini_w * p), mini_h), border_radius=2)
+            pygame.draw.rect(screen, (65, 65, 105), (bx, my0, mini_w, mini_h), 1, border_radius=2)
+            lbl = self._font_small.render(name, True, COL_TEXT if hi else COL_DIMTEXT)
+            screen.blit(lbl, (bx + (mini_w - lbl.get_width()) // 2, my0 + mini_h + 3))
 
-        # Second line HUD: prob values as text
-        prob_str = "  ".join(
-            f"{'>' if i == predicted_class else ' '}{p:.2f}" for i, p in enumerate(probs)
+        # --- Right: timer ---
+        timer_x = WIN_W - 190
+        elapsed = self._final_time if self._final_time is not None else self._elapsed
+        timer_col = COL_GOAL if self.won else COL_TEXT
+        screen.blit(
+            self._font_timer.render(f"TIME  {_fmt_time(elapsed)}", True, timer_col),
+            (timer_x, MAZE_H + 10),
         )
-        prob_surf = self._font_small.render(prob_str, True, COL_DIMTEXT)
-        screen.blit(prob_surf, (18, MAZE_H + HUD_H - 20))
+        if self._best_time is not None:
+            screen.blit(
+                self._font_small.render(f"BEST  {_fmt_time(self._best_time)}", True, COL_DIMTEXT),
+                (timer_x, MAZE_H + 34),
+            )
+
+        # --- Bottom row: prob values ---
+        prob_str = "  ".join(
+            f"{'>' if predicted_class is not None and i == predicted_class else ' '}{p:.2f}"
+            for i, p in enumerate(probs)
+        )
+        screen.blit(
+            self._font_small.render(prob_str, True, COL_DIMTEXT),
+            (18, MAZE_H + HUD_H - 20),
+        )
 
     def _draw_win(self, screen: pygame.Surface) -> None:
         overlay = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 170))
         screen.blit(overlay, (0, 0))
 
+        # "YOU WIN!"
         txt  = self._font_win.render("YOU WIN!", True, COL_GOAL)
-        rect = txt.get_rect(center=(WIN_W // 2, WIN_H // 2 - 25))
-        screen.blit(txt, rect)
+        screen.blit(txt, txt.get_rect(center=(WIN_W // 2, WIN_H // 2 - 50)))
 
-        sub  = self._font_sub.render("Resetting maze…", True, COL_TEXT)
-        rect2 = sub.get_rect(center=(WIN_W // 2, WIN_H // 2 + 45))
-        screen.blit(sub, rect2)
+        # Final time
+        if self._final_time is not None:
+            time_surf = self._font_sub.render(
+                f"Time:  {_fmt_time(self._final_time)}", True, COL_TEXT)
+            screen.blit(time_surf, time_surf.get_rect(center=(WIN_W // 2, WIN_H // 2 + 5)))
+
+        # Best time
+        if self._best_time is not None:
+            best_surf = self._font_sub.render(
+                f"Best:  {_fmt_time(self._best_time)}", True, COL_DIMTEXT)
+            screen.blit(best_surf, best_surf.get_rect(center=(WIN_W // 2, WIN_H // 2 + 38)))
+
+        # "Resetting…"
+        sub = self._font_small.render("Resetting maze…", True, COL_DIMTEXT)
+        screen.blit(sub, sub.get_rect(center=(WIN_W // 2, WIN_H // 2 + 72)))
 
 
 # ---------------------------------------------------------------------------
 # Run — starts the game loop on the calling (main) thread
 # ---------------------------------------------------------------------------
 
-def run() -> None:
+def run(on_event=None, on_frame=None) -> None:
     """
     Initialise pygame, create the game, and run the 60 fps loop.
     Blocks until the window is closed.
 
-    The external pipeline should call ``update(probs)`` from a background
-    thread before or after calling this function.
+    Parameters
+    ----------
+    on_event : callable(pygame.event.Event) | None
+        Called for every pygame event, after the built-in quit/ESC handling.
+        Use this in __main__ to react to keypresses (N, M, arrow keys, …).
+    on_frame : callable() | None
+        Called once per frame before game.tick().
+        Use this to read pygame.key.get_pressed() and push probs via update().
     """
     global _game
 
@@ -440,7 +497,7 @@ def run() -> None:
     _game = MazeGame()
 
     while _game.running:
-        dt = clock.tick(FPS) / 1000.0   # seconds elapsed since last frame
+        dt = clock.tick(FPS) / 1000.0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -448,6 +505,11 @@ def run() -> None:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     _game.running = False
+            if on_event is not None:
+                on_event(event)
+
+        if on_frame is not None:
+            on_frame()
 
         _game.tick(dt)
         _game.draw(screen)
@@ -457,21 +519,59 @@ def run() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Standalone test  — random probs, no BCI pipeline needed
+# Standalone keyboard test — no BCI pipeline needed
+#
+# Controls
+# --------
+#   Arrow keys  move the player (confidence is fixed)
+#   N           decrease confidence by 0.05
+#   M           increase confidence by 0.05
+#   Q / Escape  quit
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    def _random_feeder() -> None:
-        """Feed random softmax probs at 10 Hz — same rate as the real pipeline."""
-        rng = np.random.default_rng()
-        while True:
-            logits = rng.normal(0.0, 1.8, size=4)
-            e      = np.exp(logits - logits.max())
-            probs  = e / e.sum()
-            update(probs)
-            time.sleep(0.1)
+    _confidence = [0.85]   # mutable so the closures below can write to it
 
-    feeder = threading.Thread(target=_random_feeder, daemon=True)
-    feeder.start()
+    def _on_event(event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key == pygame.K_n:
+            _confidence[0] = round(max(0.0, _confidence[0] - 0.05), 2)
+            print(f"confidence → {_confidence[0]:.2f}")
+        elif event.key == pygame.K_m:
+            _confidence[0] = round(min(1.0, _confidence[0] + 0.05), 2)
+            print(f"confidence → {_confidence[0]:.2f}")
 
-    run()   # blocks until the window is closed
+    def _on_frame() -> None:
+        keys = pygame.key.get_pressed()
+
+        if   keys[pygame.K_LEFT]:  direction = 0
+        elif keys[pygame.K_RIGHT]: direction = 1
+        elif keys[pygame.K_UP]:    direction = 2
+        elif keys[pygame.K_DOWN]:  direction = 3
+        else:                      direction = None
+
+        c = _confidence[0]
+        if direction is not None:
+            if c <= 0.25:
+                probs = np.zeros(4, dtype=float)
+                others = [i for i in range(4) if i != direction]
+                rand_vals = np.random.random(3)
+                rand_vals = (1.0 - c) * rand_vals / rand_vals.sum()
+                probs[direction] = c
+                for i, v in zip(others, rand_vals):
+                    probs[i] = v
+            else:
+                # Put confidence mass on the chosen class, spread the rest evenly
+                probs = np.full(4, (1.0 - c) / 3.0)
+                probs[direction] = c
+        else:
+            # No key held → idle
+            probs = np.zeros(4, dtype=float)
+
+        update(probs)
+
+    print("Arrow keys to move  |  N = lower confidence  |  M = raise confidence")
+    print(f"Starting confidence: {_confidence[0]:.2f}")
+
+    run(on_event=_on_event, on_frame=_on_frame)
