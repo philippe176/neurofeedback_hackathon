@@ -30,6 +30,8 @@ def build_game_runtime(
         RhythmGameDashboard(
             history_len=dashboard_history,
             draw_every=dashboard_draw_every,
+            on_toggle_simulation=provider.set_auto_perform,
+            get_simulation_enabled=provider.is_auto_perform_enabled,
         )
         if enable_dashboard
         else None

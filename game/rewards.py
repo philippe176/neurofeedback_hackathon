@@ -21,6 +21,12 @@ class GameRewardProvider:
     def preview(self, timestamp: float) -> GamePreview:
         return self.session.preview(timestamp)
 
+    def set_auto_perform(self, enabled: bool) -> None:
+        self.session.cfg.auto_perform = bool(enabled)
+
+    def is_auto_perform_enabled(self) -> bool:
+        return bool(self.session.cfg.auto_perform)
+
     def adjust_probabilities(self, sample: StreamSample, probs: np.ndarray) -> np.ndarray:
         probs = np.asarray(probs, dtype=float)
         cfg = self.session.cfg

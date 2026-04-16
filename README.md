@@ -333,12 +333,19 @@ Fine-grain control is available with:
 
 When visualization is enabled, game mode opens a richer dashboard with:
 
+- an interactive control bar with buttons for auto-tracking and simulation mode
 - a live embedding-space panel showing class cluster separation progress
 - a coaching panel showing NOW vs UP NEXT intentions and countdowns
 - a decoder confidence panel (target-highlighted vs predicted class)
 - a reward-breakdown panel for per-sample feedback components
 - distinction metrics (per-class correctness, dominant confusions)
 - trend charts for reward, margin, and correctness over time
+
+Live controls on the game dashboard:
+
+- `Tracking ON/OFF` button: toggles automatic viewport tracking of the manifold
+- `Simulation ON/OFF` button: toggles auto-perform behavior simulation at runtime
+- keyboard shortcuts: `T` for tracking, `S` for simulation
 
 ### Minimal Python receiver
 

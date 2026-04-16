@@ -98,3 +98,15 @@ def test_auto_perform_adjusts_probabilities_toward_target() -> None:
     adjusted = provider.adjust_probabilities(_sample(1, 200.6), uniform)
     assert np.isclose(float(adjusted.sum()), 1.0)
     assert adjusted[target] > 0.9
+
+
+def test_reward_provider_simulation_toggle_methods() -> None:
+    model_cfg = ModelConfig(reward_min=0.0, reward_max=1.0)
+    game_cfg = RhythmGameConfig(auto_perform=False, enable_adaptation=False)
+    provider = GameRewardProvider(model_cfg=model_cfg, game_cfg=game_cfg)
+
+    assert not provider.is_auto_perform_enabled()
+    provider.set_auto_perform(True)
+    assert provider.is_auto_perform_enabled()
+    provider.set_auto_perform(False)
+    assert not provider.is_auto_perform_enabled()

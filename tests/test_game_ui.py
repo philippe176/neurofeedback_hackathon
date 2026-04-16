@@ -37,3 +37,31 @@ def test_dashboard_update_and_close_do_not_crash() -> None:
         dash.update(_step(2, target=2, pred=1))
     finally:
         dash.close()
+
+
+def test_dashboard_runtime_toggles_update_state() -> None:
+    sim_state = {"enabled": False}
+
+    def _set_sim(enabled: bool) -> None:
+        sim_state["enabled"] = bool(enabled)
+
+    def _get_sim() -> bool:
+        return bool(sim_state["enabled"])
+
+    dash = RhythmGameDashboard(
+        history_len=40,
+        draw_every=1,
+        on_toggle_simulation=_set_sim,
+        get_simulation_enabled=_get_sim,
+    )
+    try:
+        assert dash.auto_tracking
+        dash._on_toggle_tracking(None)
+        assert not dash.auto_tracking
+
+        assert not sim_state["enabled"]
+        dash._on_toggle_simulation(None)
+        assert sim_state["enabled"]
+        assert dash.simulation_enabled
+    finally:
+        dash.close()
