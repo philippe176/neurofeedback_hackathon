@@ -2,9 +2,9 @@
 Entry point for the Brain Emulator.
 
 Usage:
-    python -m emulator                        # medium difficulty, 256 dims, port 5555
-    python -m emulator --difficulty easy
-    python -m emulator --difficulty hard --dims 128 --port 5556
+    python -m emulator                        # d1 difficulty, 256 dims, port 5555
+    python -m emulator --difficulty d2
+    python -m emulator --difficulty d5 --dims 128 --port 5556
 """
 
 import argparse

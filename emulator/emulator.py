@@ -29,7 +29,7 @@ from .generative import GenerativeModel
 class BrainEmulator:
     def __init__(
         self,
-        difficulty: str = "medium",
+        difficulty: str = "d1",
         n_dims: int = 256,
         port: int = 5555,
         sample_rate: float = 10.0,

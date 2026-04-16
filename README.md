@@ -169,7 +169,7 @@ Requires Python ≥ 3.10.
 pip install -r requirements.txt
 ```
 
-Dependencies: `numpy`, `pyzmq`, `pygame`, `matplotlib`, `scipy`.
+Dependencies: `numpy`, `pyzmq`, `matplotlib`, `torch`.
 
 ---
 
@@ -252,6 +252,34 @@ python -m emulator
 # Run starter template in another
 python starter_template.py
 ```
+
+### Real-time movement model (new)
+
+A first implementation of an online decoder and manifold visualizer now lives in
+`model/`. It expects one embedding vector per timestep and trains in the loop
+with a hybrid objective:
+
+- supervised classification loss on labeled samples
+- reward-weighted policy loss from programmatic reward signals
+
+The default stream key is `data` (compatible with the current emulator), but
+you can switch to a dedicated embedding field from an upstream encoder.
+
+```bash
+# terminal 1: emulator
+python -m emulator --difficulty d1
+
+# terminal 2: realtime decoder + manifold visualization
+python -m model --embedding-key data --projection-dim 2
+```
+
+Optional arguments:
+
+- `--no-viz` to disable matplotlib rendering
+- `--projection-dim 3` for 3D manifold view
+- `--warmup-labeled 200` to control when reward-weighted updates start
+- `--update-every 10` to control optimizer cadence
+- `--device cuda` to force GPU when available
 
 ### Minimal Python receiver
 
