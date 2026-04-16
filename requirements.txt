@@ -1,2 +1,3 @@
 numpy>=1.26
 pyzmq>=25.0
+matplotlib

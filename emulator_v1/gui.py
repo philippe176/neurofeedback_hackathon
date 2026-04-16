@@ -122,7 +122,6 @@ def run_emulator_gui(
         sq  = dyn.strategy_quality
         zc  = dyn.z_class
         zs  = dyn.z_strategy
-        opt = dyn.optimal_strategy
 
         # -- Header --
         canvas.create_text(
@@ -166,22 +165,28 @@ def run_emulator_gui(
         # -- Strategy pad --
         canvas.create_rectangle(PAD, PAD_TOP, PAD+PAD_SIZE, PAD_TOP+PAD_SIZE,
                                  fill="#191928", outline="#373760", width=2, tags="dynamic")
-        opt_str = f"({opt[0]:+.1f}, {opt[1]:+.1f})" if cur is not None else "—"
         canvas.create_text(PAD, PAD_TOP - 16, anchor="w",
-                           text=f"STRATEGY  (arrow keys)  — target: {opt_str}",
+                           text="STRATEGY  (arrow keys)  — target: (0, 0)",
                            font=f_small, fill="#64648c", tags="dynamic")
         # crosshair
         canvas.create_line(PAD+10, PCY, PAD+PAD_SIZE-10, PCY, fill="#282840", tags="dynamic")
         canvas.create_line(PCX, PAD_TOP+10, PCX, PAD_TOP+PAD_SIZE-10, fill="#282840", tags="dynamic")
 
-        # Target ring at active class's optimal corner (or centre if rest)
-        opt = dyn.optimal_strategy
-        tx  = int(PCX + opt[0] * HALF)
-        ty  = int(PCY - opt[1] * HALF)
-        tr  = 12
-        ring_col = _rgb(*CLASS_COLORS[cur]) if cur is not None else "#3a3a5a"
-        canvas.create_oval(tx-tr, ty-tr, tx+tr, ty+tr,
-                           outline=ring_col, width=2, tags="dynamic")
+        # Target ring at (0,0)
+        tr = 12
+        canvas.create_oval(PCX-tr, PCY-tr, PCX+tr, PCY+tr,
+                           outline="#3a3a5a", width=2, tags="dynamic")
+
+        # Disturbance arrow (shows what's pushing z_strategy right now)
+        dist = dyn.current_disturbance
+        dist_mag = np.linalg.norm(dist)
+        if dist_mag > 0.001:
+            arrow_scale = HALF * 0.8
+            ex = int(PCX + dist[0] * arrow_scale)
+            ey = int(PCY - dist[1] * arrow_scale)
+            canvas.create_line(PCX, PCY, ex, ey,
+                               fill="#c84040", width=3, arrow="last",
+                               arrowshape=(10, 12, 4), tags="dynamic")
 
         # Trail
         for i, s in enumerate(strategy_trail):
@@ -222,7 +227,7 @@ def run_emulator_gui(
         sc     = dyn.class_scale
         sc_col = _rgb(*_lerp_color((200, 60, 60), (60, 200, 60), sc))
 
-        _bar("Strategy quality  (reach class corner)", sq, 14,  sq_col)
+        _bar("Strategy quality  (stay near centre)", sq, 14,  sq_col)
         _bar("Signal strength   (hold quality)",     sc, 56,  sc_col)
 
         # z values
@@ -236,11 +241,14 @@ def run_emulator_gui(
                            text=f"t = {dyn.t:.1f} s",
                            font=f_small, fill="#646482", tags="dynamic")
 
-        # Spring indicator
-        spring_pct = 1.0 - float(np.linalg.norm(zs)) / np.sqrt(2)
+        # Disturbance magnitude indicator
+        dist_mag = float(np.linalg.norm(dyn.current_disturbance))
+        dcol = "#dc6432" if dist_mag > 0.01 else "#3a3a5a"
         canvas.create_text(STX+10, PAD_TOP+165, anchor="w",
-                           text=f"spring  →  (0, 0)   rate: {emulator.cfg.spring_rate:.1f}",
-                           font=f_small, fill="#3a3a5a", tags="dynamic")
+                           text=f"disturbance  {'ON' if dist_mag > 0.01 else 'off'}  "
+                                f"({dyn.current_disturbance[0]:+.2f}, "
+                                f"{dyn.current_disturbance[1]:+.2f})",
+                           font=f_small, fill=dcol, tags="dynamic")
 
         # -- Footer --
         fy = PAD_TOP + PAD_SIZE + 16
