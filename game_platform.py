@@ -86,8 +86,8 @@ _AXIS2 = np.array([ 1.0,  1.0, 0.0]) / math.sqrt(2.0)
 _TORQUE_MAP = [
     (0, -1.0),
     (1, -1.0),
-    (0, +1.0),
     (1, +1.0),
+    (0, +1.0),
 ]
 _CLASS_GAIN = [1.00, 1.00, 1.00, 1.00]
 
@@ -100,9 +100,9 @@ _CORNERS = {
 }
 
 # which corner each class pushes up
-_CLASS_CORNER = {0: "fl", 1: "fr", 2: "br", 3: "bl"}
+_CLASS_CORNER = {0: "fl", 1: "fr", 2: "bl", 3: "br"}
 
-_CLASS_LABELS = ["Left Hand", "Right Hand", "Right Leg", "Left Leg"]
+_CLASS_LABELS = ["Left Hand", "Right Hand", "Left Leg", "Right Leg"]
 _CORNER_LABEL = {
     "fr": "front-right ↑",
     "fl": "front-left ↑",
