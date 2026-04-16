@@ -61,8 +61,10 @@ TARGET_FPS   = 60
 PLATFORM_HALF = 1.0           # corners at (±1, ±1, 0) on the flat platform
 
 # Torque added per frame = confidence × TORQUE_SCALE
-TORQUE_SCALE   = 0.035        # rad / frame at confidence=1.0
+TORQUE_SCALE   = 0.010        # rad / frame at confidence=1.0
 MAX_ANGLE      = math.radians(40)
+MAX_OMEGA      = math.radians(0.8)   # max angular speed per frame
+ANGULAR_DAMPING = 0.88               # 1.0 = no damping, lower = more damping
 
 # Stability threshold: both |θ| below this → "stable"
 STABLE_EPS     = math.radians(3.5)
@@ -76,23 +78,25 @@ _AXIS1 = np.array([ 1.0, -1.0, 0.0]) / math.sqrt(2.0)
 _AXIS2 = np.array([ 1.0,  1.0, 0.0]) / math.sqrt(2.0)
 
 # class → (axis_index, sign)
-# Class 0 left_hand  : front-left ↑  → +θ2
-# Class 1 right_hand : front-right ↑ → +θ1
-# Class 2 right_leg  : back-right ↑  → −θ2
-# Class 3 left_leg   : back-left ↑   → −θ1
+# user-facing convention after front/back flip:
+# Class 0 left_hand  : front-left ↑  → −θ1
+# Class 1 right_hand : front-right ↑ → −θ2
+# Class 2 right_leg  : back-right ↑  → +θ1
+# Class 3 left_leg   : back-left ↑   → +θ2
 _TORQUE_MAP = [
-    (1, +1.0),
-    (0, +1.0),
-    (1, -1.0),
     (0, -1.0),
+    (1, -1.0),
+    (0, +1.0),
+    (1, +1.0),
 ]
+_CLASS_GAIN = [1.00, 1.00, 1.00, 1.00]
 
 # corner names and their (x, y) positions on the flat platform
 _CORNERS = {
-    "fr": ( 1.0,  1.0),   # front-right
-    "fl": (-1.0,  1.0),   # front-left
-    "br": ( 1.0, -1.0),   # back-right
-    "bl": (-1.0, -1.0),   # back-left
+    "br": ( 1.0,  1.0),   # back-right
+    "bl": (-1.0,  1.0),   # back-left
+    "fr": ( 1.0, -1.0),   # front-right
+    "fl": (-1.0, -1.0),   # front-left
 }
 
 # which corner each class pushes up
@@ -161,21 +165,29 @@ def update(probs: np.ndarray) -> None:
         summing to 1.0.
     """
     _ensure_init()
-    _st.last_probs = np.asarray(probs, dtype=float)
+    probs = np.asarray(probs, dtype=float)
+    _st.last_probs = probs
 
     # physics
     now = time.monotonic()
     _st.last_time = now
 
-    predicted = int(np.argmax(probs))
-    confidence = float(probs[predicted])
+    if np.allclose(probs, probs[0]):
+        predicted = None
+        confidence = 0.0
+    else:
+        predicted = int(np.argmax(probs))
+        confidence = float(probs[predicted])
 
-    axis_idx, sign = _TORQUE_MAP[predicted]
-    _st.omega[axis_idx] += sign * confidence * TORQUE_SCALE
+        axis_idx, sign = _TORQUE_MAP[predicted]
+        gain = _CLASS_GAIN[predicted]
+        _st.omega[axis_idx] += sign * confidence * TORQUE_SCALE * gain
 
     for i in range(2):
+        _st.omega[i] *= ANGULAR_DAMPING
+        _st.omega[i] = float(np.clip(_st.omega[i], -MAX_OMEGA, MAX_OMEGA))
         _st.theta[i] += _st.omega[i]
-        _st.theta[i]  = float(np.clip(_st.theta[i], -MAX_ANGLE, MAX_ANGLE))
+        _st.theta[i] = float(np.clip(_st.theta[i], -MAX_ANGLE, MAX_ANGLE))
 
     _tick_perturbation(now)
     _tick_scoring(now)
@@ -356,9 +368,13 @@ def _draw_platform() -> None:
     glEnd()
 
     # corner dots — highlight active corner
-    probs     = _st.last_probs if _st.last_probs is not None else np.full(4, 0.25)
-    predicted = int(np.argmax(probs))
-    active_cn = _CLASS_CORNER[predicted]
+    probs = _st.last_probs if _st.last_probs is not None else np.full(4, 0.25)
+
+    if np.allclose(probs, probs[0]):
+        active_cn = None
+    else:
+        predicted = int(np.argmax(probs))
+        active_cn = _CLASS_CORNER[predicted]
 
     for cname, (cx, cy) in _CORNERS.items():
         is_active = (cname == active_cn)
@@ -470,9 +486,12 @@ def _draw_hud(surf: pygame.Surface) -> None:
     ]
     for row, (key, cls, name, corner) in enumerate(key_map):
         y = my + 22 + row * 22
-        predicted_cls = int(np.argmax(probs))
-        hl = (255, 240, 80) if (predicted_cls == cls and float(probs[cls]) > 0.4) else (190, 190, 190)
-        _txt(surf, f"  {key} : {name:<12}  {corner}", (mx, y), _font_sm, hl)
+        if np.allclose(probs, probs[0]):
+            predicted_cls = None
+        else:
+            predicted_cls = int(np.argmax(probs))
+        hl = (255, 240, 80) if (predicted_cls == cls and float(probs[cls]) 
+                                > 0.4) else (190, 190, 190)
 
 
 def _blit_hud_as_gl_texture(surf: pygame.Surface) -> None:
