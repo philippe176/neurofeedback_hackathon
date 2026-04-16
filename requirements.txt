@@ -1,2 +1,5 @@
 numpy>=1.26
 pyzmq>=25.0
+matplotlib>=3.8
+torch>=2.2
+pytest>=8.0

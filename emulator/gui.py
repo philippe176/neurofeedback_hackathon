@@ -39,7 +39,7 @@ def _lerp_color(c1, c2, t):
 # ---------------------------------------------------------------------------
 
 def run_emulator_gui(
-    difficulty: str = "medium",
+    difficulty: str = "d1",
     n_dims: int = 256,
     port: int = 5555,
 ) -> None:
