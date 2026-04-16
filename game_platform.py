@@ -37,6 +37,7 @@ import pygame
 from pygame.locals import (
     DOUBLEBUF, OPENGL, QUIT, KEYDOWN,
     K_ESCAPE, K_q, K_p, K_LEFT, K_RIGHT, K_UP, K_DOWN,
+    K_n, K_m,
 )
 from OpenGL.GL import (
     GL_BLEND, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_DEPTH_TEST,
@@ -181,7 +182,8 @@ def update(probs: np.ndarray) -> None:
 
         axis_idx, sign = _TORQUE_MAP[predicted]
         gain = _CLASS_GAIN[predicted]
-        _st.omega[axis_idx] += sign * confidence * TORQUE_SCALE * gain
+        effective_confidence = confidence ** 3
+        _st.omega[axis_idx] += sign * effective_confidence * TORQUE_SCALE * gain
 
     for i in range(2):
         _st.omega[i] *= ANGULAR_DAMPING
@@ -554,15 +556,51 @@ def _render_frame() -> None:
 
 if __name__ == "__main__":
     _ensure_init()
+    _confidence = [0.85]   # mutable so the event loop below can write to it
+
+    print("Arrow keys to move  |  N = lower confidence  |  M = raise confidence")
+    print(f"Starting confidence: {_confidence[0]:.2f}")
 
     while True:
-        _handle_events()
+        for event in pygame.event.get():
+            if event.type == QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == KEYDOWN:
+                if event.key in (K_ESCAPE, K_q):
+                    pygame.quit()
+                    sys.exit()
+                elif event.key == K_p:
+                    _st.perturb_enabled = not _st.perturb_enabled
+                    _st.stable_since    = None
+                elif event.key == K_n:
+                    _confidence[0] = round(max(0.0, _confidence[0] - 0.05), 2)
+                    print(f"confidence → {_confidence[0]:.2f}")
+                elif event.key == K_m:
+                    _confidence[0] = round(min(1.0, _confidence[0] + 0.05), 2)
+                    print(f"confidence → {_confidence[0]:.2f}")
 
         keys = pygame.key.get_pressed()
-        if   keys[K_LEFT]:  probs = np.array([1.0, 0.0, 0.0, 0.0])
-        elif keys[K_RIGHT]: probs = np.array([0.0, 1.0, 0.0, 0.0])
-        elif keys[K_UP]:    probs = np.array([0.0, 0.0, 1.0, 0.0])
-        elif keys[K_DOWN]:  probs = np.array([0.0, 0.0, 0.0, 1.0])
-        else:               probs = np.array([0.25, 0.25, 0.25, 0.25])
+        if   keys[K_LEFT]:  direction = 0
+        elif keys[K_RIGHT]: direction = 1
+        elif keys[K_UP]:    direction = 2
+        elif keys[K_DOWN]:  direction = 3
+        else:               direction = None
+
+        c = _confidence[0]
+        if direction is not None:
+            if c <= 0.25:
+                probs = np.zeros(4, dtype=float)
+                others = [i for i in range(4) if i != direction]
+                rand_vals = np.random.random(3)
+                rand_vals = (1.0 - c) * rand_vals / rand_vals.sum()
+                probs[direction] = c
+                for i, v in zip(others, rand_vals):
+                    probs[i] = v
+            else:
+                probs = np.full(4, (1.0 - c) / 3.0)
+                probs[direction] = c
+        else:
+            probs = np.array([0.25, 0.25, 0.25, 0.25])
 
         update(probs)

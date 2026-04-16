@@ -32,10 +32,11 @@ import pygame
 # Constants
 # ---------------------------------------------------------------------------
 
-TILE      = 40       # pixels per maze tile
-FPS       = 60
-MAX_SPEED = 160      # pixels / second at confidence = 1.0
-PLAYER_R  = 12       # player radius in pixels
+TILE             = 40       # pixels per maze tile
+FPS              = 60
+MAX_SPEED        = 160      # pixels / second at confidence = 1.0
+PLAYER_R         = 12       # player radius in pixels
+TUTORIAL_DURATION = 60.0   # seconds of free-roam before the maze starts
 
 # Class index → movement direction unit vector (dx, dy)
 DIR_VEC: dict[int, tuple[int, int]] = {
@@ -206,6 +207,15 @@ class Player:
         if not _overlaps_wall(self.x, new_y, PLAYER_R):
             self.y = new_y
 
+    def try_move_free(self, dx: float, dy: float) -> None:
+        """Move without wall checks — clamp only to the open-area bounds."""
+        x_min = TILE + PLAYER_R
+        x_max = (MAZE_COLS - 1) * TILE - PLAYER_R
+        y_min = TILE + PLAYER_R
+        y_max = (MAZE_ROWS - 1) * TILE - PLAYER_R
+        self.x = float(np.clip(self.x + dx, x_min, x_max))
+        self.y = float(np.clip(self.y + dy, y_min, y_max))
+
     @property
     def tile(self) -> tuple[int, int]:
         return (int(self.x // TILE), int(self.y // TILE))
@@ -218,12 +228,17 @@ class Player:
 class MazeGame:
     def __init__(self) -> None:
         self.probs: np.ndarray = np.full(4, 0.25)
-        self.player    = Player(*START_TILE)
+        # Start player at the centre of the open field for the tutorial
+        self.player    = Player(MAZE_COLS // 2, MAZE_ROWS // 2)
         self.running   = True
         self.won       = False
         self._win_timer = 0.0
 
-        # Timer
+        # Tutorial phase
+        self._phase          = "tutorial"   # "tutorial" | "maze"
+        self._tutorial_time  = TUTORIAL_DURATION
+
+        # Maze timer
         self._elapsed:   float       = 0.0
         self._best_time: float | None = None
         self._final_time: float | None = None   # time frozen at goal
@@ -243,7 +258,50 @@ class MazeGame:
     # Update
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Tutorial helpers
+    # ------------------------------------------------------------------
+
+    def _tick_tutorial(self, dt: float) -> None:
+        self._goal_pulse = (self._goal_pulse + dt * 3.0) % (2 * np.pi)
+        self._tutorial_time -= dt
+        if self._tutorial_time <= 0.0:
+            self._start_maze()
+            return
+
+        with _lock:
+            probs = self.probs.copy()
+
+        if np.allclose(probs, probs[0]):
+            predicted_class = None
+            confidence = 0.0
+        else:
+            predicted_class = int(np.argmax(probs))
+            confidence = float(probs[predicted_class])
+
+        if predicted_class is not None and confidence > 0.0:
+            ddx, ddy = DIR_VEC[predicted_class]
+            speed = MAX_SPEED * confidence
+            self.player.try_move_free(ddx * speed * dt, ddy * speed * dt)
+
+    def _start_maze(self) -> None:
+        self._phase = "maze"
+        self.player.reset(*START_TILE)
+
+    def skip_tutorial(self) -> None:
+        """Called externally when the player presses S."""
+        if self._phase == "tutorial":
+            self._start_maze()
+
+    # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
     def tick(self, dt: float) -> None:
+        if self._phase == "tutorial":
+            self._tick_tutorial(dt)
+            return
+
         self._goal_pulse = (self._goal_pulse + dt * 3.0) % (2 * np.pi)
 
         # Advance timer while playing
@@ -292,12 +350,49 @@ class MazeGame:
     # ------------------------------------------------------------------
 
     def draw(self, screen: pygame.Surface) -> None:
+        if self._phase == "tutorial":
+            self._draw_tutorial(screen)
+        else:
+            screen.fill(COL_BG)
+            self._draw_maze(screen)
+            self._draw_player(screen)
+            self._draw_hud(screen)
+            if self.won:
+                self._draw_win(screen)
+
+    def _draw_tutorial(self, screen: pygame.Surface) -> None:
         screen.fill(COL_BG)
-        self._draw_maze(screen)
+        # Open floor — outer ring stays as wall, everything inside is walkable
+        for row in range(MAZE_ROWS):
+            for col in range(MAZE_COLS):
+                rect = pygame.Rect(col * TILE, row * TILE, TILE, TILE)
+                if row == 0 or row == MAZE_ROWS - 1 or col == 0 or col == MAZE_COLS - 1:
+                    pygame.draw.rect(screen, COL_WALL, rect)
+                    pygame.draw.rect(screen, COL_WALL_EDGE, rect, 1)
+                else:
+                    pygame.draw.rect(screen, COL_FLOOR, rect)
         self._draw_player(screen)
         self._draw_hud(screen)
-        if self.won:
-            self._draw_win(screen)
+        self._draw_tutorial_overlay(screen)
+
+    def _draw_tutorial_overlay(self, screen: pygame.Surface) -> None:
+        # Semi-transparent banner at the top of the play area
+        banner = pygame.Surface((WIN_W, 58), pygame.SRCALPHA)
+        banner.fill((0, 0, 0, 155))
+        screen.blit(banner, (0, 0))
+
+        title = self._font_sub.render("FAMILIARIZATION  —  open field", True, (160, 190, 255))
+        screen.blit(title, title.get_rect(centerx=WIN_W // 2, y=6))
+
+        hint = self._font_small.render(
+            "Move freely to get used to your brain signals.   S = skip", True, COL_DIMTEXT)
+        screen.blit(hint, hint.get_rect(centerx=WIN_W // 2, y=34))
+
+        # Countdown (turns gold in the last 10 s)
+        remaining = max(0.0, self._tutorial_time)
+        cdown_col = COL_GOAL if remaining < 10.0 else COL_TEXT
+        cdown = self._font_timer.render(f"{int(remaining) + 1:2d} s", True, cdown_col)
+        screen.blit(cdown, cdown.get_rect(right=WIN_W - 16, y=10))
 
     def _draw_maze(self, screen: pygame.Surface) -> None:
         for row in range(MAZE_ROWS):
@@ -505,6 +600,8 @@ def run(on_event=None, on_frame=None) -> None:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     _game.running = False
+                elif event.key == pygame.K_s:
+                    _game.skip_tutorial()
             if on_event is not None:
                 on_event(event)
 
