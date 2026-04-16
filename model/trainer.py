@@ -50,9 +50,18 @@ class OnlineTrainer:
             out = self.model(x)
 
         probs = out.probs.squeeze(0).cpu().numpy()
+        adjust_fn = getattr(self.reward_provider, "adjust_probabilities", None)
+        if callable(adjust_fn):
+            adjusted = np.asarray(adjust_fn(sample, probs), dtype=float)
+            if adjusted.shape == probs.shape and np.all(np.isfinite(adjusted)):
+                mass = float(np.sum(adjusted))
+                if mass > 0.0:
+                    probs = adjusted / mass
+
         pred = int(np.argmax(probs))
         confidence = float(probs[pred])
         reward = self.reward_provider.compute(sample, probs)
+        game_feedback = getattr(self.reward_provider, "last_feedback", None)
 
         self._update_reward_baseline(reward)
 
@@ -86,6 +95,29 @@ class OnlineTrainer:
             penultimate=out.penultimate.squeeze(0).cpu().numpy().copy(),
             projection=out.projection.squeeze(0).cpu().numpy().copy(),
             training=train_metrics,
+            game_prompt_id=getattr(game_feedback, "prompt_id", None),
+            game_target_class=getattr(game_feedback, "target_class", None),
+            game_in_window=bool(getattr(game_feedback, "in_window", False)),
+            game_hit=bool(getattr(game_feedback, "hit", False)),
+            game_label_correct=bool(getattr(game_feedback, "label_correct", False)),
+            game_timing_hit=bool(getattr(game_feedback, "timing_hit", False)),
+            game_timing_error_s=getattr(game_feedback, "timing_error_s", None),
+            game_seconds_to_window_start=getattr(game_feedback, "seconds_to_window_start", None),
+            game_next_target_class=getattr(game_feedback, "next_target_class", None),
+            game_seconds_to_next_prompt_start=getattr(
+                game_feedback,
+                "seconds_to_next_prompt_start",
+                None,
+            ),
+            game_prompt_progress=getattr(game_feedback, "prompt_progress", None),
+            game_margin=getattr(game_feedback, "margin", None),
+            game_level=getattr(game_feedback, "level", None),
+            game_streak=getattr(game_feedback, "streak", None),
+            game_reward_components=(
+                dict(getattr(game_feedback, "components", {}))
+                if game_feedback is not None
+                else None
+            ),
         )
 
     def _should_update(self) -> bool:

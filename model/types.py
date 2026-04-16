@@ -61,3 +61,18 @@ class InferenceStep:
     penultimate: np.ndarray
     projection: np.ndarray
     training: TrainingMetrics | None
+    game_prompt_id: int | None = None
+    game_target_class: int | None = None
+    game_in_window: bool = False
+    game_hit: bool = False
+    game_label_correct: bool = False
+    game_timing_hit: bool = False
+    game_timing_error_s: float | None = None
+    game_seconds_to_window_start: float | None = None
+    game_next_target_class: int | None = None
+    game_seconds_to_next_prompt_start: float | None = None
+    game_prompt_progress: float | None = None
+    game_margin: float | None = None
+    game_level: int | None = None
+    game_streak: int | None = None
+    game_reward_components: dict[str, float] | None = None

@@ -281,6 +281,58 @@ Optional arguments:
 - `--update-every 10` to control optimizer cadence
 - `--device cuda` to force GPU when available
 
+### Thought rhythm game mode (Just-Dance style)
+
+The realtime runner now supports a prompt-timing mode where the model is
+rewarded for producing the correct class with reliable confidence/separability
+within a timing window.
+
+The current reward policy is distinction-first: label correctness, confidence
+margin, and separability are weighted more strongly than timing.
+
+```bash
+# terminal 1: emulator
+python -m emulator --difficulty d1
+
+# terminal 2: model + rhythm prompt rewards (slow/permissive defaults)
+python -m model --game-mode
+```
+
+Adaptive difficulty scaffolding is available and can be enabled with:
+
+```bash
+python -m model --game-mode --game-adaptive-difficulty
+```
+
+Useful game-specific flags:
+
+- `--game-beat-interval` to control prompt spacing
+- `--game-prompt-duration` / `--game-hit-window` for slower vs stricter timing
+- `--game-print-every` to control console HUD cadence
+- `--game-seed` to make prompt sequences reproducible
+- `--game-dashboard-history` to control embedding history size in the dashboard
+- `--game-dashboard-draw-every` to control dashboard redraw cadence
+
+Automatic high-performance simulation (for demos/warm starts):
+
+```bash
+python -m model --game-mode --game-auto-perform
+```
+
+Fine-grain control is available with:
+
+- `--game-auto-strength`
+- `--game-auto-prewindow-strength`
+- `--game-auto-blend`
+- `--game-auto-anticipation`
+
+When visualization is enabled, game mode opens a richer dashboard with:
+
+- a live embedding-space panel showing class cluster separation progress
+- a large prompt cue panel indicating what to think now and what comes next
+- distinction metrics (per-class correctness, dominant confusions)
+- trend charts for reward, margin, and correctness over time
+
 ### Minimal Python receiver
 
 ```python
