@@ -174,14 +174,6 @@ function initializeControls() {
         });
     });
 
-    const slider = document.getElementById('centroid-slider');
-    slider.addEventListener('input', () => {
-        centroidWindow = parseInt(slider.value, 10);
-        updateCentroidSlider();
-    });
-    slider.addEventListener('change', () => {
-        socket.emit('set_centroid_window', { window: centroidWindow });
-    });
 
     document.getElementById('exploration-class-select').addEventListener('change', (e) => {
         explorationTargetClass = parseInt(e.target.value, 10);
@@ -324,14 +316,11 @@ function updateTrainingPhaseSelection() {
     document.querySelectorAll('.btn-phase').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.phase === trainingPhase);
     });
-    document.getElementById('training-phase-name').textContent = trainingPhaseName;
     document.getElementById('training-phase-description').textContent = trainingPhaseDescription;
     ensureDefaultSaveName();
 }
 
 function updateStreamPanel() {
-    document.getElementById('stream-host').textContent = streamState.host || 'localhost';
-    document.getElementById('stream-port').textContent = streamState.port || '5555';
     document.getElementById('stream-message').textContent = streamState.message || 'Waiting for stream.';
     document.getElementById('stream-age').textContent = formatAge(streamState.last_sample_age_s);
 
@@ -346,8 +335,6 @@ function updateModelSelection() {
     document.querySelectorAll('.btn-model').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.model === currentModelType);
     });
-    document.getElementById('active-model-name').textContent = currentModelName;
-    document.getElementById('active-model-type').textContent = currentModelType;
     ensureDefaultSaveName();
 }
 
@@ -355,15 +342,12 @@ function updateVisualizationSelection() {
     document.querySelectorAll('.btn-viz').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.viz === currentVizMethod);
     });
-    document.getElementById('active-viz-name').textContent = currentVizName;
-    document.getElementById('active-viz-type').textContent = currentVizMethod;
     document.getElementById('projection-title').textContent = currentVizName;
     ensureDefaultSaveName();
 }
 
 function updateCentroidSlider() {
-    document.getElementById('centroid-slider').value = centroidWindow;
-    document.getElementById('centroid-value').textContent = `${centroidWindow}`;
+    // Centroid slider removed from UI; kept as no-op for socket compat
 }
 
 function updateStatusCards() {
@@ -395,7 +379,7 @@ function updateStatusCards() {
 
     const guidanceCard = document.getElementById('guidance-card');
     const guidanceState = coachState.state || 'hold';
-    guidanceCard.className = `signal-card guidance-card ${guidanceState}`;
+    guidanceCard.className = `guidance-banner ${guidanceState}`;
     document.getElementById('guidance-headline').textContent = coachState.headline || 'Waiting for stream';
     document.getElementById('guidance-message').textContent = coachState.message || 'Start the emulator to receive feedback.';
     document.getElementById('guidance-score-label').textContent = coachState.score_label || 'Decoder Match';
@@ -404,20 +388,20 @@ function updateStatusCards() {
         : '--';
 
     const zone = data.zone || {};
-    document.getElementById('zone-name').textContent = zone.class_name || 'Waiting for stream';
+    document.getElementById('zone-name').textContent = zone.class_name || 'Waiting';
     if (zone.source === 'centroid' && typeof zone.distance === 'number') {
-        document.getElementById('zone-detail').textContent = `Closest learned zone. Distance ${zone.distance.toFixed(2)} from the current point.`;
+        document.getElementById('zone-detail').textContent = `Distance ${zone.distance.toFixed(2)} from zone center.`;
     } else if (zone.source === 'prediction') {
-        document.getElementById('zone-detail').textContent = 'Still estimating zones. Showing the model prediction instead.';
+        document.getElementById('zone-detail').textContent = 'Estimating zones — showing prediction.';
     } else {
-        document.getElementById('zone-detail').textContent = 'The moving point on the map will become your zone feedback.';
+        document.getElementById('zone-detail').textContent = 'Your position on the map becomes the zone feedback.';
     }
 }
 
 function updateCalibrationPanel() {
     const readiness = calibrationState.readiness || 0;
     const targetPerClass = calibrationState.target_per_class || 0;
-    document.getElementById('calibration-state').textContent = calibrationState.ready ? 'Ready For Feedback' : 'Building Clusters';
+    document.getElementById('calibration-state').textContent = calibrationState.ready ? 'Ready' : 'Building';
     document.getElementById('calibration-state').className = `big-chip ${calibrationState.ready ? 'ready' : 'neutral'}`;
     document.getElementById('calibration-score').textContent = `${(readiness * 100).toFixed(0)}%`;
     document.getElementById('calibration-progress-bar').style.width = `${Math.max(0, Math.min(100, readiness * 100))}%`;

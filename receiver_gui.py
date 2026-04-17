@@ -9,7 +9,7 @@ Connects to the emulator via ZMQ and shows:
   Right panel — Raw signal (first 8 channels) scrolling over time.
 
 Run the emulator first:
-    python -m emulator -d easy
+    python -m emulator --difficulty d1
 
 Then in a separate terminal:
     python receiver_gui.py

@@ -42,26 +42,33 @@ is held:
 
 | Key | Intention    | Centroid in z_class space     |
 |-----|-------------|-------------------------------|
-| `1` | Left hand   | `[ 2.0,  0.9,  0.0]`          |
-| `2` | Right hand  | `[ 2.0, -0.9,  0.0]`          |
-| `3` | Left leg    | `[-2.0,  0.9,  0.0]`          |
-| `4` | Right leg   | `[-2.0, -0.9,  0.0]`          |
+| `1` | Left hand   | `[+2.0, +1.5,  0.0]`          |
+| `2` | Right hand  | `[+2.0, -1.5,  0.0]`          |
+| `3` | Left leg    | `[-2.0,  0.0, +1.5]`          |
+| `4` | Right leg   | `[-2.0,  0.0, -1.5]`          |
 | `0` | Rest        | decays to origin               |
 
-This structure is intentional: **hand vs leg is easy** (large separation on dim 0),
-**left vs right is hard** (small separation on dim 1) — mirroring real clinical data.
+This structure is intentional: dim 0 provides a robust **coarse hand-vs-leg split**,
+while dims 1-2 encode **fine within-cluster distinctions** (left vs right) that are
+more sensitive to strategy quality and rotation mixing.
 
 ### The optimal strategy
 
-The optimal strategy position is always `(0, 0)` in strategy space — the same for
-every class.
+In Version 2, the optimal strategy depends on the active class and sits at one of four
+corners in strategy space:
 
-Each difficulty level has a **per-class temporal disturbance function** that continuously
-pushes `z_strategy` away from `(0, 0)`.  The operator must learn to counter-balance
-these disturbances with arrow keys to keep `z_strategy` near the origin.
+| Class | Intention    | Optimal `z_strategy` |
+|-------|--------------|----------------------|
+| `0`   | Left hand    | `[+0.5, +0.5]`       |
+| `1`   | Right hand   | `[-0.5, +0.5]`       |
+| `2`   | Left leg     | `[+0.5, -0.5]`       |
+| `3`   | Right leg    | `[-0.5, -0.5]`       |
 
-Different difficulty levels use different disturbance patterns (pulses, diagonal kicks,
-double-tap rhythms, rotating forces, dual-frequency drives) — see below.
+`z_strategy` is continuously pulled back toward the origin by a spring term, so
+the operator must keep applying arrow-key control to hold the class-specific corner.
+
+Difficulty in v2 is controlled by spring strength, rotation sensitivity, and noise
+levels (not by pulse-wave disturbance patterns).
 
 ### Intention vs strategy — why they are separate
 
@@ -85,7 +92,10 @@ because the label comes only from the number key, not from how many arrows are p
 The observed 256-dimensional signal `x` is generated as:
 
 ```
-x = A  @  R(z_strategy)  @  diag(scale)  @  z  +  noise
+x = A  @  R(z_strategy)  @  z_scaled  +  noise
+
+z_scaled[1:3] = class_scale * z[1:3]
+z_scaled[0]   = z[0]    # coarse class axis always preserved
 ```
 
 - **A** — a fixed random 256×8 mixing matrix (unknown to students).
@@ -93,13 +103,14 @@ x = A  @  R(z_strategy)  @  diag(scale)  @  z  +  noise
 
 - **R(z_strategy)** — a strategy-dependent rotation matrix built from three
   [Givens rotations](https://en.wikipedia.org/wiki/Givens_rotation) in planes
-  `(0,5)`, `(1,6)`, `(2,7)`.  When `z_strategy` is far from `(0, 0)`, this rotation
-  mixes the class signal into the noise dimensions, making classes indistinguishable.
+  `(1,5)`, `(2,6)`, `(1,7)`.  The rotation depends on error relative to the
+  active class's optimal corner. When strategy is poor, this rotation mixes fine
+  class signal into noise dimensions.
   The projection that recovers the classes must be recomputed as strategy shifts.
 
-- **scale** — suppresses the class signal when strategy is poor.  Implemented as a
-  **leaky integrator** with time constant ~3 s: arriving at `(0, 0)` is not enough —
-  the signal builds up gradually and requires the strategy to be *held*.
+- **class_scale** — suppresses only the fine class dimensions (1-2) when strategy is
+  poor. Implemented as a **leaky integrator** with time constant ~3 s: reaching the
+  optimal corner is not enough by itself — signal builds gradually and must be held.
   Leaving too soon causes decay.
 
 - **noise** — Gaussian observation noise added on top.
@@ -117,47 +128,41 @@ co-adaptation.
 scale(t+1) = scale(t) + (dt / τ) * (strategy_quality³ - scale(t))
 ```
 
-where τ = 3 seconds and `strategy_quality = exp(-2.5 * ||z_strategy||)`.
+where τ = 3 seconds and
+`strategy_quality = exp(-2.5 * ||z_strategy - optimal_strategy(class)||)`.
 
 Consequences:
 
-- **Build-up**: arriving at `(0, 0)` gives ~16% scale after 0.5 s,
+- **Build-up**: if strategy quality is near 1.0, scale reaches ~16% after 0.5 s,
   ~50% after 2 s, ~82% after 5 s.
 - **Decay**: drifting away causes scale to fall back toward zero.
-- **Switching classes**: the disturbance pattern changes immediately, so the operator
-  must learn the new counter-rhythm AND hold it before the signal builds up.
+- **Switching classes**: the optimal strategy corner changes immediately, so the
+  operator must retarget and hold the new corner long enough for fine signal to rebuild.
 
 ### Why classes are hard to separate by default
 
-When `z_strategy` is far from `(0, 0)` (arrows not compensating):
+When `z_strategy` is far from the active class's optimal corner:
 
-- `strategy_quality` is near zero → `class_scale` stays near zero
-- The rotation `R(z_strategy)` mixes class signal into noise dims
-- PCA / LDA on the observed signal finds noise, not classes
+- `strategy_quality` drops → `class_scale` for fine dimensions stays low
+- The rotation `R(z_strategy)` mixes fine signal into noise dims
+- You still retain coarse cluster structure (hand/leg), but fine within-cluster
+  separation (left/right) weakens substantially
 
-When the operator keeps `z_strategy` near `(0, 0)`:
+When the operator keeps `z_strategy` near the class-specific corner:
 
-- `class_scale` rises toward 1.0
-- `R(z_strategy) ≈ I` — class signal is preserved
-- Projection methods can clearly separate all four classes
+- `class_scale` rises (especially fine dimensions)
+- `R(z_strategy)` is closer to identity on fine axes
+- Projection methods can separate all four classes more clearly
 
-### Difficulty levels and disturbance patterns
+### Difficulty levels (v2 spring model)
 
-| Level | Disturbance pattern | Description |
-|-------|---------------------|-------------|
-| `d1`  | Cardinal pulses     | 2 Hz on/off pulses, each class pushed in a different cardinal direction (R/U/L/D). Counter: tap the opposing arrow ~2×/s in sync. |
-| `d2`  | Diagonal pulses     | 1.5 Hz pulses at diagonal directions with 2:1 axis ratio. Counter: hold diagonal arrows at the right rhythm. |
-| `d3`  | Double-tap rhythm   | Two 120 ms bursts per second with a 750 ms rest — then repeat. Counter: two quick taps, then release. Holding continuously over-corrects. |
-| `d4`  | Rotating force      | Continuously rotating disturbance (1 full rotation per 2.5 s). Counter: smoothly rotate through arrow combinations. |
-| `d5`  | Dual-frequency      | Independent x and y axes driven at different square-wave frequencies. Counter: tap L/R and U/D independently at their own rhythms. |
-
-Noise and signal parameters also increase across levels:
-
-| Parameter | d1 | d2 | d3 | d4 | d5 |
-|-----------|----|----|----|----|-----|
-| Observation noise std | 0.35 | 0.50 | 0.65 | 0.85 | 1.10 |
-| Latent noise std | 0.04 | 0.06 | 0.08 | 0.10 | 0.12 |
-| Disturbance amplitude | 0.065 | 0.075 | 0.080 | 0.090 | 0.095 |
+| Level | Spring rate | Strategy speed | Sensitivity | Obs noise std | Latent noise std | Intuition |
+|-------|-------------|----------------|-------------|---------------|------------------|-----------|
+| `d1`  | 0.8         | 0.090          | 1.8         | 0.35          | 0.04             | Easy to reach/hold optimal corner |
+| `d2`  | 1.2         | 0.090          | 2.0         | 0.50          | 0.06             | Moderate spring and noise |
+| `d3`  | 1.5         | 0.090          | 2.2         | 0.65          | 0.08             | More drift and tighter control |
+| `d4`  | 1.8         | 0.100          | 2.5         | 0.85          | 0.10             | High noise and sharper rotation response |
+| `d5`  | 2.0         | 0.112          | 2.8         | 1.10          | 0.12             | Hardest: strong spring + high noise |
 
 ---
 
@@ -169,7 +174,7 @@ Requires Python ≥ 3.10.
 pip install -r requirements.txt
 ```
 
-Dependencies: `numpy`, `pyzmq`, `matplotlib`, `torch`.
+Dependencies: `numpy`, `torch`, `scikit-learn`, `pyzmq`, `matplotlib`, `flask`, `flask-socketio`.
 
 ---
 
@@ -199,7 +204,8 @@ python -m emulator --difficulty d3 --dims 128 --port 5556
 | `←` `→` `↑` `↓` | Navigate strategy space (hold for continuous movement) |
 | `ESC` / `Q` | Quit |
 
-The **strategy quality** bar in the GUI shows how close `z_strategy` is to `(0, 0)`.
+The **strategy quality** bar in the GUI shows how close `z_strategy` is to the
+active class's optimal corner.
 This is visible to the operator but would not be shown to a real patient — it is there
 so you can verify the emulator is behaving correctly.
 

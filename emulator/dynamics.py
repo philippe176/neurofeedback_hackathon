@@ -19,7 +19,7 @@ import numpy as np
 from .config import DifficultyConfig
 
 
-# Class centroids in z_class = [coarse, fine_A, fine_B]
+# Class centroids in the 3-dim z_class subspace [coarse, fine_A, fine_B]
 CLASS_CENTROIDS = np.array(
     [
         [+2.0, +1.5, 0.0],   # left hand
@@ -33,14 +33,15 @@ CLASS_CENTROIDS = np.array(
 # Per-class optimal strategy corners in the 2D strategy plane.
 OPTIMAL_STRATEGIES = np.array(
     [
-        [+0.2, +0.2],   # left hand
-        [-0.2, +0.2],   # right hand
-        [+0.2, -0.2],   # left leg
-        [-0.2, -0.2],   # right leg
+        [+0.5, +0.5],   # left hand
+        [-0.5, +0.5],   # right hand
+        [+0.5, -0.5],   # left leg
+        [-0.5, -0.5],   # right leg
     ],
     dtype=float,
 )
 
+# Integration time constant: class_scale builds up over ~SCALE_TAU seconds
 SCALE_TAU = 3.0
 
 N_CLASS_DIMS = 3

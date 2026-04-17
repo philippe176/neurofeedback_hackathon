@@ -33,7 +33,7 @@ htmlcov/
 .tox/
 .coverage
 .coverage.*
-.cache
+.cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -43,13 +43,13 @@ pytest-cache*
 pytest-cache-files-*
 
 # Virtual environments
+.env
+.venv/
 venv/
 env/
 ENV/
-.venv/
 env.bak/
 venv.bak/
-.env
 
 # IDEs / editors
 .vscode/
@@ -68,6 +68,6 @@ Thumbs.db
 # pyenv
 .python-version
 
-# Local app artifacts
+# Local app artifacts / saved models / test artifacts
 saved_models/
 test_artifacts/

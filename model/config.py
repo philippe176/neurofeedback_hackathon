@@ -16,7 +16,7 @@ class ModelConfig:
     dropout: float = 0.10
 
     # Optimization - slightly higher LR for faster online adaptation
-    lr: float = 2e-3
+    lr: float = 8e-4
     weight_decay: float = 1e-4
     grad_clip_norm: float = 1.0
 
@@ -45,11 +45,15 @@ class ModelConfig:
     lambda_proj_sep: float = 0.25      # Increased from 0.05 - push clusters apart
     lambda_proj_temp: float = 0.02
     contrastive_weight: float = 0.10
-    contrastive_temperature: float = 0.20
+    contrastive_temperature: float = 0.50
 
-    latent_sep_margin: float = 0.80
-    projection_sep_margin: float = 0.45
-    classification_focal_gamma: float | None = 1.0  # Focal loss helps focus on hard examples
+    # Hierarchical clustering (V2 emulator)
+    lambda_coarse: float = 1.0             # Coarse 2-class head weight (cluster A vs B)
+    class_scale_gate: float = 0.2          # Below this, fine separation losses are soft-gated
+
+    latent_sep_margin: float = 1.5         # Reduced: within-cluster distance is ~1.5 in V2
+    projection_sep_margin: float = 0.8    # Reduced: smaller 2D range for fine classes
+    classification_focal_gamma: float | None = 1.0
     class_weights: tuple[float, ...] | None = None
 
     # Programmatic reward weights
@@ -123,6 +127,7 @@ class ModelConfig:
             "lambda_proj_compact",
             "lambda_proj_sep",
             "lambda_proj_temp",
+            "lambda_coarse",
         ):
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} must be >= 0")

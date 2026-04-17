@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import torch
 from torch import nn
@@ -41,6 +43,18 @@ class OnlineTrainer:
             weight_decay=cfg.weight_decay,
         )
 
+        # LR warmup + cosine decay
+        self._warmup_updates = 200
+        self._lr_min = 1e-4
+        self.scheduler = None  # Created after first update
+
+        # EMA teacher for stable inference
+        self.ema_model = copy.deepcopy(self.model)
+        self.ema_model.eval()
+        self._ema_momentum = 0.995
+        for p in self.ema_model.parameters():
+            p.requires_grad_(False)
+
         self.buffer = ExperienceReplayBuffer(cfg.buffer_size)
         self.step_count = 0
         self.num_updates = 0
@@ -55,10 +69,10 @@ class OnlineTrainer:
         sample: StreamSample,
         training_label: int | None | object = _USE_SAMPLE_LABEL,
     ) -> InferenceStep:
-        self.model.eval()
+        self.ema_model.eval()
         with torch.no_grad():
             x = torch.from_numpy(sample.embedding).to(self.device, dtype=torch.float32).unsqueeze(0)
-            out = self.model(x)
+            out = self.ema_model(x)
 
         probs = out.probs.squeeze(0).cpu().numpy()
         adjust_fn = getattr(self.reward_provider, "adjust_probabilities", None)
@@ -91,6 +105,7 @@ class OnlineTrainer:
                 label=label_value,
                 action=pred,
                 reward=reward,
+                class_scale=float(sample.class_scale) if sample.class_scale is not None else 0.0,
             )
         )
 
@@ -144,7 +159,7 @@ class OnlineTrainer:
         return True
 
     def _update_model(self) -> TrainingMetrics:
-        batch = self.buffer.sample_recent(self.cfg.batch_size)
+        batch = self.buffer.sample_stratified(self.cfg.batch_size)
         if not batch:
             return _empty_metrics(rl_enabled=False)
 
@@ -152,16 +167,34 @@ class OnlineTrainer:
         y_np = np.array([exp.label for exp in batch], dtype=np.int64)
         a_np = np.array([exp.action for exp in batch], dtype=np.int64)
         r_np = np.array([exp.reward for exp in batch], dtype=np.float32)
+        scale_np = np.array([exp.class_scale for exp in batch], dtype=np.float32)
 
         x = torch.from_numpy(x_np).to(self.device, dtype=torch.float32)
         y = torch.from_numpy(y_np).to(self.device)
         actions = torch.from_numpy(a_np).to(self.device)
         rewards = torch.from_numpy(r_np).to(self.device)
 
+        # Soft gate: how much fine-grained losses should contribute
+        # When mean class_scale is low, fine losses are suppressed
+        mean_scale = float(scale_np[y_np >= 0].mean()) if (y_np >= 0).any() else 0.0
+        gate = self.cfg.class_scale_gate
+        fine_weight = min(1.0, max(0.0, mean_scale / gate)) if gate > 0 else 1.0
+
         self.model.train()
         out = self.model(x)
 
         class_weights = self.cfg.class_weight_tensor(self.device)
+
+        # --- Coarse 2-class loss (cluster A vs B) — always at full weight ---
+        coarse_labels = y.clone()
+        coarse_labeled_mask = y >= 0
+        # Map: {0,1} -> 0 (cluster A), {2,3} -> 1 (cluster B)
+        coarse_labels[coarse_labeled_mask] = (y[coarse_labeled_mask] >= 2).long()
+        coarse_loss = supervised_classification_loss(
+            out.coarse_logits, coarse_labels,
+        )
+
+        # --- Fine 4-class losses — gated by class_scale ---
         supervised = supervised_classification_loss(
             out.logits,
             y,
@@ -194,14 +227,17 @@ class OnlineTrainer:
         proj_temporal = class_conditional_temporal_loss(out.projection, y)
 
         manifold_supervised = (
-            self.cfg.lambda_cls * supervised
-            + self.cfg.lambda_compact * compact
-            + self.cfg.lambda_sep * sep
-            + self.cfg.lambda_temp * temporal
-            + self.cfg.lambda_proj_cls * projection_supervised
-            + self.cfg.lambda_proj_compact * proj_compact
-            + self.cfg.lambda_proj_sep * proj_sep
-            + self.cfg.lambda_proj_temp * proj_temporal
+            self.cfg.lambda_coarse * coarse_loss
+            + fine_weight * (
+                self.cfg.lambda_cls * supervised
+                + self.cfg.lambda_compact * compact
+                + self.cfg.lambda_sep * sep
+                + self.cfg.lambda_temp * temporal
+                + self.cfg.lambda_proj_cls * projection_supervised
+                + self.cfg.lambda_proj_compact * proj_compact
+                + self.cfg.lambda_proj_sep * proj_sep
+                + self.cfg.lambda_proj_temp * proj_temporal
+            )
         )
 
         labeled_in_batch = int((y >= 0).sum().item())
@@ -237,6 +273,8 @@ class OnlineTrainer:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
         self.optimizer.step()
         self.num_updates += 1
+        self._update_ema()
+        self._step_lr()
 
         with torch.no_grad():
             within_z, between_z, fisher_z = geometry_statistics(
@@ -290,6 +328,30 @@ class OnlineTrainer:
             self._baseline_initialized = True
             return
         self.reward_baseline = (1.0 - alpha) * self.reward_baseline + alpha * reward
+
+    def _update_ema(self) -> None:
+        """Exponential moving average update of the teacher model."""
+        momentum = self._ema_momentum
+        for ema_p, live_p in zip(self.ema_model.parameters(), self.model.parameters()):
+            ema_p.data.mul_(momentum).add_(live_p.data, alpha=1.0 - momentum)
+        for ema_b, live_b in zip(self.ema_model.buffers(), self.model.buffers()):
+            ema_b.data.copy_(live_b.data)
+
+    def _step_lr(self) -> None:
+        """Linear warmup followed by cosine decay."""
+        import math
+
+        base_lr = self.cfg.lr
+        n = self.num_updates
+
+        if n <= self._warmup_updates:
+            lr = base_lr * (n / max(1, self._warmup_updates))
+        else:
+            progress = (n - self._warmup_updates) / max(1, 2000)
+            lr = self._lr_min + 0.5 * (base_lr - self._lr_min) * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = lr
 
 
 def _empty_metrics(rl_enabled: bool) -> TrainingMetrics:

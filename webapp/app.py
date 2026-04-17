@@ -282,7 +282,6 @@ def streaming_loop():
     global is_streaming
 
     bridge = get_bridge()
-    interval = 1.0 / 10.0
 
     while is_streaming:
         started = time.time()
@@ -292,6 +291,9 @@ def streaming_loop():
         except Exception as exc:  # pragma: no cover - defensive runtime guard
             socketio.emit("error", {"message": str(exc)})
 
+        sample_rate_hz = float(bridge.stream_sample_rate_hz or 10.0)
+        sample_rate_hz = min(max(sample_rate_hz, 1.0), 240.0)
+        interval = 1.0 / sample_rate_hz
         elapsed = time.time() - started
         time.sleep(max(0.0, interval - elapsed))
 

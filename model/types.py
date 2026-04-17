@@ -28,6 +28,8 @@ class ModelOutput:
     projection_probs: torch.Tensor
     penultimate: torch.Tensor
     projection: torch.Tensor
+    coarse_logits: torch.Tensor | None = None
+    coarse_probs: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -38,6 +40,7 @@ class Experience:
     label: int
     action: int
     reward: float
+    class_scale: float = 0.0
 
 
 @dataclass(slots=True)

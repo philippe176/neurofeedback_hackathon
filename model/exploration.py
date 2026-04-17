@@ -73,20 +73,37 @@ def analyze_strategies(
     if penultimate.shape[0] < min_samples:
         return None
 
-    n_components = min(2, penultimate.shape[0], penultimate.shape[1])
-    pca = PCA(n_components=n_components)
-    points_2d = pca.fit_transform(penultimate).astype(np.float32)
-    if points_2d.shape[1] < 2:
-        points_2d = np.column_stack([points_2d, np.zeros(points_2d.shape[0], dtype=np.float32)])
+    n_samples = int(penultimate.shape[0])
+    unique_count = int(np.unique(penultimate, axis=0).shape[0])
 
-    k = min(max_clusters, max(2, penultimate.shape[0] // 15))
-    kmeans = KMeans(n_clusters=k, n_init=5, random_state=42)
-    cluster_labels = kmeans.fit_predict(penultimate)
+    if unique_count < 2:
+        # Degenerate window: represent exploration as a single cluster at the origin.
+        points_2d = np.zeros((n_samples, 2), dtype=np.float32)
+        cluster_labels = np.zeros(n_samples, dtype=np.int64)
+        centroids_np = np.mean(penultimate, axis=0, keepdims=True)
+        centroids_2d = np.zeros((1, 2), dtype=np.float32)
+        k = 1
+    else:
+        n_components = min(2, n_samples, penultimate.shape[1])
+        pca = PCA(n_components=n_components)
+        points_2d = pca.fit_transform(penultimate).astype(np.float32)
+        if points_2d.shape[1] < 2:
+            points_2d = np.column_stack([points_2d, np.zeros(points_2d.shape[0], dtype=np.float32)])
 
-    centroids_np = kmeans.cluster_centers_
-    centroids_2d = pca.transform(centroids_np).astype(np.float32)
-    if centroids_2d.shape[1] < 2:
-        centroids_2d = np.column_stack([centroids_2d, np.zeros(centroids_2d.shape[0], dtype=np.float32)])
+        k = min(max_clusters, max(2, n_samples // 15), unique_count)
+        if k <= 1:
+            cluster_labels = np.zeros(n_samples, dtype=np.int64)
+            centroids_np = np.mean(penultimate, axis=0, keepdims=True)
+            centroids_2d = np.zeros((1, 2), dtype=np.float32)
+            k = 1
+        else:
+            kmeans = KMeans(n_clusters=k, n_init=5, random_state=42)
+            cluster_labels = kmeans.fit_predict(penultimate)
+            centroids_np = kmeans.cluster_centers_
+
+            centroids_2d = pca.transform(centroids_np).astype(np.float32)
+            if centroids_2d.shape[1] < 2:
+                centroids_2d = np.column_stack([centroids_2d, np.zeros(centroids_2d.shape[0], dtype=np.float32)])
 
     with torch.no_grad():
         points_t = torch.from_numpy(penultimate).to(device, dtype=torch.float32)

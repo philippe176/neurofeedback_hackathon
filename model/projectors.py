@@ -12,6 +12,19 @@ def _as_2d(x: np.ndarray) -> np.ndarray:
     return arr
 
 
+def _has_variation(x: np.ndarray, tol: float = 1e-8) -> bool:
+    arr = _as_2d(x)
+    if arr.shape[0] < 2:
+        return False
+    span = np.ptp(arr, axis=0)
+    return bool(np.any(span > tol))
+
+
+def _unique_row_count(x: np.ndarray) -> int:
+    arr = _as_2d(x)
+    return int(np.unique(arr, axis=0).shape[0])
+
+
 def _pad_projection(z: np.ndarray, target_dim: int) -> np.ndarray:
     arr = _as_2d(z)
     if arr.shape[1] == target_dim:
@@ -53,7 +66,7 @@ class PCAProjector(BaseProjector):
         from sklearn.decomposition import PCA
 
         x_arr = _as_2d(x)
-        if x_arr.shape[0] < 2:
+        if x_arr.shape[0] < 2 or not _has_variation(x_arr):
             self._model = None
             return self
         n_components = max(1, min(self.projection_dim, x_arr.shape[0], x_arr.shape[1]))
@@ -151,7 +164,7 @@ class TSNEProjector(_SnapshotProjector):
         from sklearn.manifold import TSNE
 
         x_arr = _as_2d(x)
-        if x_arr.shape[0] < 4:
+        if x_arr.shape[0] < 4 or _unique_row_count(x_arr) < 2:
             self._set_snapshot(x_arr, self._fallback.fit_transform(x_arr))
             return self
 
@@ -193,6 +206,11 @@ class UMAPProjector(_SnapshotProjector):
             raise ImportError("UMAP visualization requires the optional 'umap-learn' package") from exc
 
         x_arr = _as_2d(x)
+        if x_arr.shape[0] < 3 or _unique_row_count(x_arr) < 2:
+            self._model = None
+            self._set_snapshot(x_arr, self._fallback.fit_transform(x_arr))
+            return self
+
         n_neighbors = min(self.n_neighbors, max(2, x_arr.shape[0] - 1))
         self._model = umap.UMAP(
             n_components=self.projection_dim,
