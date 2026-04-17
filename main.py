@@ -23,21 +23,49 @@ import subprocess
 import sys
 import threading
 import time
+from abc import ABC, abstractmethod
+from pathlib import Path
 
 import numpy as np
 import pygame
 import zmq
 
 # ---------------------------------------------------------------------------
-# Model stub — replace predict() with your real model
+# Model interface — subclass this to add a new model
 # ---------------------------------------------------------------------------
 
-class ModelInterface:
-    """Slot your trained model in here.  predict() must be thread-safe."""
+class ModelInterface(ABC):
+    """All models must implement predict().  Must be thread-safe."""
 
+    @abstractmethod
     def predict(self, raw_data: list[float]) -> np.ndarray:
         """Return length-4 softmax probabilities [left_hand, right_hand, left_leg, right_leg]."""
+
+
+class StubModel(ModelInterface):
+    """Uniform probabilities — useful for UI testing without a trained model."""
+
+    def predict(self, raw_data: list[float]) -> np.ndarray:
         return np.full(4, 0.25)
+
+
+class ClassicModelAdapter(ModelInterface):
+    """Wraps ClassicModel (linear projection + centroid-distance softmax)."""
+
+    def __init__(self, path: str | Path = "classic_brain_model.npz"):
+        from model_Classic import ClassicModel
+        self._model = ClassicModel(path)
+
+    def predict(self, raw_data: list[float]) -> np.ndarray:
+        x = np.asarray(raw_data, dtype=float)
+        return self._model.predict_one(x).probs
+
+
+# Registry — add new models here
+MODELS: dict[str, ModelInterface] = {
+    "Stub (uniform)":  StubModel(),
+    "Classic (LDA)":   None,   # instantiated lazily on selection (needs .npz)
+}
 
 
 # ---------------------------------------------------------------------------
@@ -205,31 +233,25 @@ BTN_W, BTN_H  = 300, 70
 BTN_GAP       = 24
 
 
-def _menu() -> str | None:
-    """Show the game-selection screen.  Returns the chosen game name or None on quit."""
+def _selection_menu(title: str, subtitle: str, options: list[str]) -> str | None:
+    """Generic single-choice menu.  Returns the chosen option name or None on quit."""
     pygame.init()
     screen = pygame.display.set_mode((MENU_W, MENU_H))
-    pygame.display.set_caption("BCI Neurofeedback — Select Game")
-    clock  = pygame.font.SysFont(None, 28)  # reuse var name below
+    pygame.display.set_caption(title)
 
     font_title = pygame.font.SysFont(None, 52)
+    font_sub   = pygame.font.SysFont(None, 24)
     font_btn   = pygame.font.SysFont(None, 36)
 
-    names  = list(GAMES.keys())
-    total  = len(names) * (BTN_H + BTN_GAP) - BTN_GAP
-    y0     = (MENU_H - total) // 2 + 60   # leave room for title
+    total  = len(options) * (BTN_H + BTN_GAP) - BTN_GAP
+    y0     = (MENU_H - total) // 2 + 60
 
     buttons: list[tuple[pygame.Rect, str]] = []
-    for i, name in enumerate(names):
-        rect = pygame.Rect(
-            (MENU_W - BTN_W) // 2,
-            y0 + i * (BTN_H + BTN_GAP),
-            BTN_W,
-            BTN_H,
-        )
+    for i, name in enumerate(options):
+        rect = pygame.Rect((MENU_W - BTN_W) // 2, y0 + i * (BTN_H + BTN_GAP), BTN_W, BTN_H)
         buttons.append((rect, name))
 
-    chosen = None
+    chosen  = None
     running = True
     while running:
         mx, my = pygame.mouse.get_pos()
@@ -242,23 +264,20 @@ def _menu() -> str | None:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 for rect, name in buttons:
                     if rect.collidepoint(mx, my):
-                        chosen = name
+                        chosen  = name
                         running = False
 
         screen.fill(BG_COLOR)
-
-        title_surf = font_title.render("BCI Neurofeedback", True, TITLE_COLOR)
-        screen.blit(title_surf, title_surf.get_rect(center=(MENU_W // 2, 60)))
-
-        sub_surf = pygame.font.SysFont(None, 24).render(
-            "Choose a game", True, (140, 140, 180))
-        screen.blit(sub_surf, sub_surf.get_rect(center=(MENU_W // 2, 105)))
+        screen.blit(font_title.render(title,    True, TITLE_COLOR),
+                    font_title.render(title, True, TITLE_COLOR).get_rect(center=(MENU_W // 2, 60)))
+        screen.blit(font_sub.render(subtitle, True, (140, 140, 180)),
+                    font_sub.render(subtitle, True, (140, 140, 180)).get_rect(center=(MENU_W // 2, 105)))
 
         for rect, name in buttons:
             color = BTN_HOVER if rect.collidepoint(mx, my) else BTN_COLOR
             pygame.draw.rect(screen, color, rect, border_radius=10)
-            label = font_btn.render(name, True, BTN_TEXT)
-            screen.blit(label, label.get_rect(center=rect.center))
+            screen.blit(font_btn.render(name, True, BTN_TEXT),
+                        font_btn.render(name, True, BTN_TEXT).get_rect(center=rect.center))
 
         pygame.display.flip()
         pygame.time.Clock().tick(60)
@@ -267,28 +286,38 @@ def _menu() -> str | None:
     return chosen
 
 
+def _build_model(name: str) -> ModelInterface:
+    if name == "Classic (LDA)":
+        # Find the first .npz in the working directory, or use the default name
+        candidates = sorted(Path(".").glob("classic_brain_model*.npz"))
+        path = candidates[0] if candidates else Path("classic_brain_model.npz")
+        return ClassicModelAdapter(path)
+    return StubModel()
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    chosen = _menu()
-    if chosen is None:
+    game_name  = _selection_menu("BCI Neurofeedback", "Choose a game",  list(GAMES.keys()))
+    if game_name is None:
         return
 
-    model     = ModelInterface()
-    emulator  = _start_emulator()
+    model_name = _selection_menu("BCI Neurofeedback", "Choose a model", list(MODELS.keys()))
+    if model_name is None:
+        return
+
+    model    = _build_model(model_name)
+    emulator = _start_emulator()
 
     try:
-        t = threading.Thread(
-            target=_zmq_subscriber_thread,
-            args=(model,),
-            daemon=True,
-        )
-        t.start()
+        threading.Thread(
+            target=_zmq_subscriber_thread, args=(model,), daemon=True
+        ).start()
 
-        print(f"[menu] launching {chosen}…")
-        GAMES[chosen](model, port=5555)
+        print(f"[menu] {game_name} | {model_name}")
+        GAMES[game_name](model, port=5555)
     finally:
         emulator.terminate()
         emulator.wait()
