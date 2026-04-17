@@ -294,7 +294,7 @@ class EmulatorBridge:
     def _sync_reward_provider(self) -> None:
         self.reward_provider = (
             self.game_reward
-            if self.training_phase in {"feedback", "exploration"}
+            if self.training_phase == "feedback"
             else self.programmatic_reward
         )
         if self.trainer is not None:
@@ -589,8 +589,10 @@ class EmulatorBridge:
                 "target_margin": 0.0,
             }
 
-        if self.training_phase in {"feedback", "exploration"}:
+        if self.training_phase == "feedback":
             return self._build_game_coach_snapshot()
+        if self.training_phase == "exploration":
+            return self._build_exploration_coach_snapshot()
 
         current_label = self._labels[-1]
         predicted_class = self._preds[-1]
@@ -764,6 +766,49 @@ class EmulatorBridge:
             "message": message,
             "score": score,
             "score_label": "Prompt Match",
+            "target_margin": target_margin,
+        }
+
+    def _build_exploration_coach_snapshot(self) -> dict[str, Any]:
+        target_class = self.exploration_target_class
+        if target_class is None:
+            return {
+                "state": "idle",
+                "headline": "Choose an exploration class",
+                "message": "Pick the movement you want to explore, then search for a stable strategy.",
+                "score": 0.0,
+                "score_label": "Frozen Readout",
+                "target_margin": 0.0,
+            }
+
+        predicted_class = self._preds[-1] if self._preds else None
+        probabilities = self._last_probabilities()
+        target_prob = float(probabilities[int(target_class)]) if probabilities.size else 0.0
+        target_margin = self._target_margin(probabilities, target_class)
+        score = float(np.clip(0.8 * target_prob + 0.2 * self._compute_recent_alignment(), 0.0, 1.0))
+
+        target_name = self._class_name(target_class)
+        predicted_name = self._class_name(predicted_class)
+
+        if predicted_class == target_class and target_prob >= 0.75:
+            state = "good"
+            headline = "Strong frozen readout"
+            message = f"Frozen model reliably reads {target_name}. Keep this strategy."
+        elif predicted_class == target_class:
+            state = "hold"
+            headline = "Useful exploration pattern"
+            message = f"The frozen model reads {target_name}. Hold it a bit longer and compare nearby strategies."
+        else:
+            state = "adjust"
+            headline = "Search a different strategy"
+            message = f"Frozen model reads {predicted_name}, not {target_name}. Shift your strategy and watch the map move."
+
+        return {
+            "state": state,
+            "headline": headline,
+            "message": message,
+            "score": score,
+            "score_label": "Frozen Readout",
             "target_margin": target_margin,
         }
 
@@ -1441,7 +1486,7 @@ class EmulatorBridge:
         return max(0.0, time.time() - self.last_sample_wall_time)
 
     def game_snapshot(self, timestamp: float | None = None) -> dict[str, Any] | None:
-        if self.training_phase not in {"feedback", "exploration"}:
+        if self.training_phase != "feedback":
             return None
 
         provider = self._active_game_provider()
@@ -1492,8 +1537,10 @@ class EmulatorBridge:
         }
 
     def _feedback_target_class(self, sample: StreamSample, result: InferenceStep) -> int | None:
-        if self.training_phase in {"feedback", "exploration"} and result.game_target_class is not None:
+        if self.training_phase == "feedback" and result.game_target_class is not None:
             return int(result.game_target_class)
+        if self.training_phase == "exploration" and self.exploration_target_class is not None:
+            return int(self.exploration_target_class)
         if sample.label is None:
             return None
         return int(sample.label)
@@ -1504,6 +1551,8 @@ class EmulatorBridge:
         result: InferenceStep,
         game: dict[str, Any] | None,
     ) -> int | None:
+        if self.training_phase == "exploration" and self.exploration_target_class is not None:
+            return int(self.exploration_target_class)
         if game is not None and game.get("target_class") is not None:
             return int(game["target_class"])
         return self._feedback_target_class(sample, result)

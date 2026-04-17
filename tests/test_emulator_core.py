@@ -2,6 +2,7 @@ import socket
 import time
 
 import numpy as np
+import pytest
 
 from emulator.config import DIFFICULTIES
 from emulator.dynamics import LatentDynamics
@@ -37,6 +38,18 @@ def test_generative_model_observation_shape() -> None:
     assert x.shape == (64,)
 
 
+def test_generative_model_noise_is_seed_reproducible() -> None:
+    z = np.linspace(-1.0, 1.0, 8, dtype=float)
+    R = np.eye(8)
+    gm_a = GenerativeModel(n_obs=32, n_latent=8, seed=7)
+    gm_b = GenerativeModel(n_obs=32, n_latent=8, seed=7)
+
+    x_a = gm_a.observe(z, R, noise_std=0.2, class_scale=0.75)
+    x_b = gm_b.observe(z, R, noise_std=0.2, class_scale=0.75)
+
+    assert np.allclose(x_a, x_b)
+
+
 def test_brain_emulator_step_message_schema() -> None:
     port = _free_port()
     emu = BrainEmulator(difficulty="d1", n_dims=32, port=port, sample_rate=10.0)
@@ -52,6 +65,54 @@ def test_brain_emulator_step_message_schema() -> None:
     assert len(msg["data"]) == 32
     assert "class_scale" in msg
     assert "strategy_quality" in msg
+
+
+def test_latent_dynamics_rejects_invalid_inputs() -> None:
+    dyn = LatentDynamics(DIFFICULTIES["d1"], sample_rate=10.0)
+
+    with pytest.raises(ValueError, match="class_idx"):
+        dyn.set_class(99)
+
+    with pytest.raises(ValueError, match="shape"):
+        dyn.update_strategy(np.array([1.0, 0.0, -1.0], dtype=float))
+
+
+def test_brain_emulator_rejects_invalid_configuration() -> None:
+    with pytest.raises(ValueError, match="difficulty"):
+        BrainEmulator(difficulty="bogus")
+
+    with pytest.raises(ValueError, match="n_dims"):
+        BrainEmulator(n_dims=0)
+
+    with pytest.raises(ValueError, match="sample_rate"):
+        BrainEmulator(sample_rate=0.0)
+
+    with pytest.raises(ValueError, match="port"):
+        BrainEmulator(port=70000)
+
+
+def test_generative_model_rejects_invalid_observation_inputs() -> None:
+    gm = GenerativeModel(n_obs=16, n_latent=8)
+
+    with pytest.raises(ValueError, match="z must have shape"):
+        gm.observe(np.zeros(7, dtype=float), np.eye(8), noise_std=0.1)
+
+    with pytest.raises(ValueError, match="R must have shape"):
+        gm.observe(np.zeros(8, dtype=float), np.eye(7), noise_std=0.1)
+
+    with pytest.raises(ValueError, match="noise_std"):
+        gm.observe(np.zeros(8, dtype=float), np.eye(8), noise_std=-0.1)
+
+
+def test_brain_emulator_close_is_idempotent_and_prevents_future_steps() -> None:
+    port = _free_port()
+    emu = BrainEmulator(difficulty="d1", n_dims=8, port=port, sample_rate=10.0)
+
+    emu.close()
+    emu.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        emu.step()
 
 
 def test_emulator_receiver_stitching_roundtrip() -> None:

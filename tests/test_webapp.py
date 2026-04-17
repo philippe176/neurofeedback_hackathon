@@ -257,7 +257,7 @@ def test_emulator_bridge_switches_reward_provider_with_game_phases():
     assert isinstance(bridge.reward_provider, GameRewardProvider)
 
     bridge.set_training_phase("exploration")
-    assert isinstance(bridge.reward_provider, GameRewardProvider)
+    assert isinstance(bridge.reward_provider, ProgrammaticReward)
 
     bridge.set_training_phase("calibration")
     assert isinstance(bridge.reward_provider, ProgrammaticReward)
@@ -280,6 +280,24 @@ def test_feedback_phase_uses_game_prompt_for_ui_target():
     assert last["intended_class_name"] == last["game"]["target_class_name"]
     assert last["coach"]["score_label"] == "Prompt Match"
     assert "game" in last["session"]
+
+
+def test_exploration_phase_uses_selected_class_not_game_prompt():
+    from webapp.emulator_bridge import EmulatorBridge
+
+    receiver = FakeReceiver(make_training_samples(n_per_class=12))
+    bridge = EmulatorBridge(receiver=receiver, training_phase="exploration", transition_ignore_samples=0)
+    bridge.set_exploration_class(3)
+
+    last = None
+    for _ in range(12):
+        last = bridge.step(timeout=0.0)
+
+    assert last is not None
+    assert last["game"] is None
+    assert last["intended_class"] == 3
+    assert last["intended_class_name"] == "Right Leg"
+    assert last["coach"]["score_label"] == "Frozen Readout"
 
 
 def test_emulator_bridge_exploration_scores_points_with_frozen_model():
@@ -392,6 +410,29 @@ def test_flask_app_creates_expected_routes():
     assert "/api/reset" in rules
 
 
+def test_index_route_contains_core_dashboard_anchors():
+    import webapp.app as webapp_module
+    from webapp.emulator_bridge import EmulatorBridge
+
+    webapp_module.bridge = EmulatorBridge(receiver=FakeReceiver())
+    client = webapp_module.app.test_client()
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Neurofeedback Decoder Lab" in html
+    assert "â" not in html
+    assert 'id="btn-start"' in html
+    assert 'id="btn-stop"' in html
+    assert 'id="guidance-card"' in html
+    assert 'id="overview-phase"' in html
+    assert 'id="overview-model"' in html
+    assert 'id="manifold-plot"' in html
+    assert 'id="exploration-plot"' in html
+    assert 'id="save-model-status"' in html
+
+
 def test_status_route_reports_stream_configuration():
     import webapp.app as webapp_module
     from webapp.emulator_bridge import EmulatorBridge
@@ -422,6 +463,22 @@ def test_set_training_phase_route_updates_status():
     payload = response.get_json()
     assert payload["training_phase"] == "feedback"
     assert payload["training_phase_name"] == "Practice"
+    assert "game" in payload
+
+
+def test_set_training_phase_route_rejects_invalid_value():
+    import webapp.app as webapp_module
+    from webapp.emulator_bridge import EmulatorBridge
+
+    webapp_module.bridge = EmulatorBridge(receiver=FakeReceiver())
+    client = webapp_module.app.test_client()
+
+    response = client.post("/api/set_training_phase", json={"training_phase": "bogus"})
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["success"] is False
+    assert "Unknown training phase" in payload["error"]
 
 
 def test_set_model_and_viz_routes_update_status():
@@ -443,6 +500,42 @@ def test_set_model_and_viz_routes_update_status():
     assert payload["viz_method"] == "lda"
     assert "cnn" in payload["available_models"]
     assert "tsne" in payload["available_viz_methods"]
+
+
+def test_set_model_and_viz_routes_reject_invalid_values():
+    import webapp.app as webapp_module
+    from webapp.emulator_bridge import EmulatorBridge
+
+    webapp_module.bridge = EmulatorBridge(receiver=FakeReceiver())
+    client = webapp_module.app.test_client()
+
+    response_model = client.post("/api/set_model", json={"model_type": "bogus"})
+    response_viz = client.post("/api/set_viz_method", json={"viz_method": "bogus"})
+
+    assert response_model.status_code == 400
+    assert response_model.get_json()["success"] is False
+    assert "Unknown model type" in response_model.get_json()["error"]
+
+    assert response_viz.status_code == 400
+    assert response_viz.get_json()["success"] is False
+    assert "Unknown visualization method" in response_viz.get_json()["error"]
+
+
+def test_set_centroid_window_route_clamps_range():
+    import webapp.app as webapp_module
+    from webapp.emulator_bridge import EmulatorBridge
+
+    webapp_module.bridge = EmulatorBridge(receiver=FakeReceiver())
+    client = webapp_module.app.test_client()
+
+    low = client.post("/api/set_centroid_window", json={"window": 1})
+    high = client.post("/api/set_centroid_window", json={"window": 999})
+
+    assert low.status_code == 200
+    assert low.get_json()["window"] == 10
+
+    assert high.status_code == 200
+    assert high.get_json()["window"] == 300
 
 
 def test_save_model_route_writes_checkpoint(monkeypatch):

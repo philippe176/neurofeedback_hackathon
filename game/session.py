@@ -75,8 +75,7 @@ class GameSession:
         preview = self.preview(sample.timestamp)
         rel_time_s = preview.relative_time_s
 
-        assert self.current_prompt is not None
-        prompt = self.current_prompt
+        prompt = self._require_current_prompt()
         target_class = prompt.target_class
 
         predicted_class = int(np.argmax(probs))
@@ -167,8 +166,7 @@ class GameSession:
         rel_time_s = self._relative_time(timestamp)
         self._ensure_active_prompt(rel_time_s)
 
-        assert self.current_prompt is not None
-        prompt = self.current_prompt
+        prompt = self._require_current_prompt()
         policy = self.level_policy
 
         in_window = prompt.hit_window_start_s <= rel_time_s <= prompt.hit_window_end_s
@@ -200,14 +198,15 @@ class GameSession:
         if self.current_prompt is None:
             self._start_prompt(start_s=0.0)
 
-        assert self.current_prompt is not None
-        while rel_time_s > self.current_prompt.end_s:
-            prev_prompt = self.current_prompt
+        prompt = self._require_current_prompt()
+        while rel_time_s > prompt.end_s:
+            prev_prompt = prompt
             prev_policy = self.cfg.levels[prev_prompt.level]
             self._finalize_prompt()
 
             next_start_s = prev_prompt.start_s + prev_policy.beat_interval_s
             self._start_prompt(start_s=next_start_s)
+            prompt = self._require_current_prompt()
 
     def _start_prompt(self, start_s: float) -> None:
         self.current_prompt = self.timeline.make_prompt(
@@ -267,3 +266,8 @@ class GameSession:
             - self.cfg.w_confusion_penalty * c.confusion_penalty
         )
         return float(np.clip(reward, self.cfg.reward_min, self.cfg.reward_max))
+
+    def _require_current_prompt(self) -> PromptEvent:
+        if self.current_prompt is None:
+            raise RuntimeError("GameSession has no active prompt")
+        return self.current_prompt

@@ -110,3 +110,17 @@ def test_reward_provider_simulation_toggle_methods() -> None:
     assert provider.is_auto_perform_enabled()
     provider.set_auto_perform(False)
     assert not provider.is_auto_perform_enabled()
+
+
+def test_game_reward_provider_persists_feedback_into_sample_raw() -> None:
+    model_cfg = ModelConfig(reward_min=0.0, reward_max=1.0)
+    game_cfg = RhythmGameConfig(enable_adaptation=False)
+    provider = GameRewardProvider(model_cfg=model_cfg, game_cfg=game_cfg)
+    sample = _sample(0, 300.0)
+
+    reward = provider.compute(sample, np.array([0.25, 0.25, 0.25, 0.25], dtype=float))
+
+    assert reward >= model_cfg.reward_min
+    assert "game" in sample.raw
+    assert "prompt_id" in sample.raw["game"]
+    assert "component_margin" in sample.raw["game"]

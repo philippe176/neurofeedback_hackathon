@@ -34,18 +34,30 @@ class BrainEmulator:
         port: int = 5555,
         sample_rate: float = 10.0,
     ):
-        self.cfg: DifficultyConfig = DIFFICULTIES[difficulty]
-        self.n_dims      = n_dims
-        self.sample_rate = sample_rate
+        normalized_difficulty = str(difficulty).strip().lower()
+        if normalized_difficulty not in DIFFICULTIES:
+            raise ValueError(f"difficulty must be one of {sorted(DIFFICULTIES)}")
+        if int(n_dims) <= 0:
+            raise ValueError("n_dims must be > 0")
+        if float(sample_rate) <= 0.0:
+            raise ValueError("sample_rate must be > 0")
+        if not (1 <= int(port) <= 65535):
+            raise ValueError("port must be in [1, 65535]")
+
+        self.cfg: DifficultyConfig = DIFFICULTIES[normalized_difficulty]
+        self.n_dims      = int(n_dims)
+        self.sample_rate = float(sample_rate)
 
         self.dynamics  = LatentDynamics(self.cfg, sample_rate=sample_rate)
-        self.gen_model = GenerativeModel(n_obs=n_dims)
+        self.gen_model = GenerativeModel(n_obs=self.n_dims)
 
         # ZMQ publisher
         self._context = zmq.Context()
         self._socket  = self._context.socket(zmq.PUB)
+        self._socket.setsockopt(zmq.LINGER, 0)
         self._socket.bind(f"tcp://*:{port}")
-        self._port = port
+        self._port = int(port)
+        self._closed = False
 
         self.sample_count = 0
 
@@ -64,6 +76,8 @@ class BrainEmulator:
     # ------------------------------------------------------------------
 
     def step(self) -> dict:
+        if self._closed:
+            raise RuntimeError("BrainEmulator is closed")
         state = self.dynamics.step()
         R     = self.dynamics.get_rotation()
         z     = self.dynamics.z_full
@@ -92,8 +106,11 @@ class BrainEmulator:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        self._socket.close()
+        if self._closed:
+            return
+        self._socket.close(0)
         self._context.term()
+        self._closed = True
 
     @property
     def port(self) -> int:

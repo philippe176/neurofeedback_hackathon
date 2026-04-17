@@ -61,3 +61,77 @@ def test_receiver_queue_keeps_latest_when_full(make_stream_sample) -> None:
     out = receiver.get(timeout=0.01)
     assert out is not None
     assert out.sample_idx == 2
+
+
+def test_experience_replay_buffer_stratified_sampling_balances_classes() -> None:
+    buf = ExperienceReplayBuffer(capacity=32)
+    for idx in range(12):
+        label = idx % 2
+        buf.append(
+            Experience(
+                sample_idx=idx,
+                timestamp=float(idx),
+                embedding=np.array([idx], dtype=np.float32),
+                label=label,
+                action=label,
+                reward=1.0,
+                class_scale=0.2 + 0.1 * label,
+            )
+        )
+
+    batch = buf.sample_stratified(8, recency_bias=0.5)
+    labels = [exp.label for exp in batch]
+
+    assert len(batch) == 8
+    assert labels.count(0) >= 3
+    assert labels.count(1) >= 3
+    assert abs(labels.count(0) - labels.count(1)) <= 2
+
+
+def test_experience_replay_buffer_stratified_sampling_handles_unlabeled_only() -> None:
+    buf = ExperienceReplayBuffer(capacity=8)
+    for idx in range(5):
+        buf.append(
+            Experience(
+                sample_idx=idx,
+                timestamp=float(idx),
+                embedding=np.array([idx], dtype=np.float32),
+                label=-1,
+                action=0,
+                reward=0.0,
+            )
+        )
+
+    batch = buf.sample_stratified(3)
+
+    assert len(batch) == 3
+    assert all(exp.label == -1 for exp in batch)
+
+
+def test_receiver_parse_message_flattens_nested_embedding_and_defaults() -> None:
+    receiver = ZMQEmbeddingReceiver(host="localhost", port=5555, embedding_key="emb")
+    sample = receiver._parse_message({"emb": [[1.0, 2.0], [3.0, 4.0]], "label": None})
+
+    assert sample.sample_idx == -1
+    assert sample.label is None
+    assert sample.embedding.shape == (4,)
+    assert sample.class_scale is None
+
+
+def test_receiver_start_stop_are_idempotent_without_server() -> None:
+    receiver = ZMQEmbeddingReceiver(
+        host="localhost",
+        port=6553,
+        queue_capacity=4,
+        receiver_timeout_ms=20,
+    )
+
+    receiver.start()
+    first_thread = receiver._thread
+    receiver.start()
+    receiver.stop()
+    receiver.stop()
+
+    assert first_thread is not None
+    assert receiver._thread is None
+    assert receiver._running is False

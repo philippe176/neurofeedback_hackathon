@@ -7,7 +7,7 @@
     <meta name="description" content="Real-time neurofeedback dashboard for training a brain-computer interface decoder.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -15,9 +15,13 @@
 <body>
     <div class="app-shell">
         <header class="header" id="app-header">
-            <div>
+            <div class="header-copy">
                 <p class="eyebrow">Neurofeedback Decoder Lab</p>
-                <h1>Teach the decoder to read your strategy</h1>
+                <h1>Train the decoder, then shape the brain-zone map in real time</h1>
+                <p class="header-subcopy">
+                    A live cockpit for calibration, practice, and exploration while the emulator stream
+                    feeds the decoder.
+                </p>
             </div>
             <div class="header-status">
                 <span id="connection-status" class="status-pill disconnected">Disconnected</span>
@@ -28,6 +32,7 @@
 
         <section class="hero" id="hero-section">
             <div class="hero-copy">
+                <p class="hero-kicker">Live Training Loop</p>
                 <p>
                     Run the emulator in a separate window, choose the intended task with <code>1-4</code>,
                     and search with the arrow keys until the model reads the same task back.
@@ -38,11 +43,46 @@
                     <span>3. Move through the brain-zone map until prediction matches intention</span>
                 </div>
             </div>
-            <div class="hero-actions">
-                <button id="btn-start" class="btn btn-primary">Start Listening</button>
-                <button id="btn-stop" class="btn btn-secondary" disabled>Stop Listening</button>
-                <button id="btn-reset" class="btn btn-ghost">Reset Decoder</button>
+            <div class="hero-side">
+                <div class="hero-actions">
+                    <button id="btn-start" class="btn btn-primary">Start Listening</button>
+                    <button id="btn-stop" class="btn btn-secondary" disabled>Stop Listening</button>
+                    <button id="btn-reset" class="btn btn-ghost">Reset Decoder</button>
+                </div>
+                <div class="hero-note-grid">
+                    <article class="hero-note">
+                        <span class="hero-note-label">Loop</span>
+                        <strong>Teach - Practice - Explore</strong>
+                    </article>
+                    <article class="hero-note">
+                        <span class="hero-note-label">Goal</span>
+                        <strong>Make the readout agree with your intent</strong>
+                    </article>
+                </div>
             </div>
+        </section>
+
+        <section class="overview-strip" aria-label="Session Overview">
+            <article class="overview-card">
+                <span class="overview-label">Mode</span>
+                <strong id="overview-phase" class="overview-value">Teach</strong>
+            </article>
+            <article class="overview-card">
+                <span class="overview-label">Decoder</span>
+                <strong id="overview-model" class="overview-value">DNN Decoder</strong>
+            </article>
+            <article class="overview-card">
+                <span class="overview-label">View</span>
+                <strong id="overview-viz" class="overview-value">Neural Projection</strong>
+            </article>
+            <article class="overview-card">
+                <span class="overview-label">Stream</span>
+                <strong id="overview-stream" class="overview-value">Idle</strong>
+            </article>
+            <article class="overview-card">
+                <span class="overview-label">Difficulty</span>
+                <strong id="overview-difficulty" class="overview-value">Waiting</strong>
+            </article>
         </section>
 
         <main class="main-layout">
@@ -61,11 +101,11 @@
                         </button>
                         <button class="btn btn-option btn-phase" data-phase="feedback">
                             <span class="option-title">Practice</span>
-                            <span class="option-copy">Real-time coaching — adjust until predictions match.</span>
+                            <span class="option-copy">Real-time coaching - adjust until predictions match.</span>
                         </button>
                         <button class="btn btn-option btn-phase" data-phase="exploration">
                             <span class="option-title">Explore</span>
-                            <span class="option-copy">Freeze the model — discover your best strategy for one task.</span>
+                            <span class="option-copy">Freeze the model - discover your best strategy for one task.</span>
                         </button>
                     </div>
                 </section>
@@ -138,12 +178,12 @@
                     <label class="field-label" for="save-model-name">Checkpoint Name</label>
                     <input id="save-model-name" class="text-input" type="text" value="dnn_neural_calibration">
                     <button id="btn-save-model" class="btn btn-primary wide">Save Snapshot</button>
-                    <div id="save-model-status" class="helper-copy">Ready to save.</div>
+                    <div id="save-model-status" class="helper-copy" role="status" aria-live="polite">Ready to save.</div>
                 </section>
             </aside>
 
             <section class="content">
-                <!-- Guidance Card — the primary feedback element -->
+                <!-- Guidance Card - the primary feedback element -->
                 <article id="guidance-card" class="guidance-banner hold">
                     <div class="guidance-main">
                         <div class="guidance-state-ring">

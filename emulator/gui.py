@@ -1,13 +1,13 @@
 """
 Tkinter-based keyboard control window for the Brain Emulator.
-Uses only stdlib (tkinter) — no pygame font dependency.
+Uses only stdlib (tkinter) - no pygame font dependency.
 
 Controls
 --------
-  1 / 2 / 3 / 4   — set intention to left_hand / right_hand / left_leg / right_leg
-  0                — rest (no intention)
-  Arrow keys       — navigate strategy space (hold for continuous movement)
-  ESC / Q          — quit
+  1 / 2 / 3 / 4   - set intention to left_hand / right_hand / left_leg / right_leg
+  0                - rest (no intention)
+  Arrow keys       - navigate strategy space (hold for continuous movement)
+  ESC / Q          - quit
 """
 
 import sys
@@ -52,7 +52,7 @@ def run_emulator_gui(
 
     print(f"\n{'='*55}")
     print(f"  Brain Emulator started")
-    print(f"  ZMQ PUB  →  tcp://localhost:{port}")
+    print(f"  ZMQ PUB  ->  tcp://localhost:{port}")
     print(f"  Difficulty : {difficulty}   |   Dims : {n_dims}   |   Rate : {emulator.sample_rate} Hz")
     print(f"{'='*55}")
     print("  Keys : 1=left_hand  2=right_hand  3=left_leg  4=right_leg  0=rest")
@@ -95,7 +95,7 @@ def run_emulator_gui(
     strategy_trail: list[np.ndarray] = []
     TRAIL_LEN = 40
     show_optimal = tk.BooleanVar(value=True)
-    saved_marks: dict[int | None, list[np.ndarray]] = {}   # class → list of z_strategy snapshots
+    saved_marks: dict[int | None, list[np.ndarray]] = {}   # class -> list of z_strategy snapshots
 
 
     # ---- Key bindings ----
@@ -133,7 +133,7 @@ def run_emulator_gui(
     STX      = PAD + PAD_SIZE + 20   # stats panel x
     STW      = W - STX - PAD
 
-    # Toggle checkbox for the optimal strategy ring — sits in the bottom-left corner.
+    # Toggle checkbox for the optimal strategy ring - sits in the bottom-left corner.
     btn_opt = tk.Checkbutton(
         canvas, text="Show optimal",
         variable=show_optimal,
@@ -198,9 +198,9 @@ def run_emulator_gui(
         canvas.create_rectangle(PAD, PAD_TOP, PAD+PAD_SIZE, PAD_TOP+PAD_SIZE,
                                  fill="#191928", outline="#373760", width=2, tags="dynamic")
         nearest_opt = dyn.optimal_strategy
-        opt_str = f"({nearest_opt[0]:+.1f}, {nearest_opt[1]:+.1f})" if cur is not None else "—"
+        opt_str = f"({nearest_opt[0]:+.1f}, {nearest_opt[1]:+.1f})" if cur is not None else "--"
         canvas.create_text(PAD, PAD_TOP - 16, anchor="w",
-                           text=f"STRATEGY  (arrow keys)  — target: {opt_str}",
+                           text=f"STRATEGY  (arrow keys)  - target: {opt_str}",
                            font=f_small, fill="#64648c", tags="dynamic")
         # crosshair
         canvas.create_line(PAD+10, PCY, PAD+PAD_SIZE-10, PCY, fill="#282840", tags="dynamic")
@@ -234,7 +234,7 @@ def run_emulator_gui(
             sy   = int(PCY - s[1] * HALF)
             canvas.create_oval(sx-r, sy-r, sx+r, sy+r, fill=col, outline="", tags="dynamic")
 
-        # Saved marks (space bar) — only show marks for the current active class
+        # Saved marks (space bar) - only show marks for the current active class
         col = _rgb(*CLASS_COLORS[cur])
         for m in saved_marks.get(cur, []):
             mx = int(PCX + m[0] * HALF)
@@ -295,13 +295,13 @@ def run_emulator_gui(
         # Spring indicator
         spring_pct = 1.0 - float(np.linalg.norm(zs)) / np.sqrt(2)
         canvas.create_text(STX+10, PAD_TOP+165, anchor="w",
-                           text=f"spring  →  (0, 0)   rate: {emulator.cfg.spring_rate:.1f}",
+                           text=f"spring  ->  (0, 0)   rate: {emulator.cfg.spring_rate:.1f}",
                            font=f_small, fill="#3a3a5a", tags="dynamic")
 
         # -- Footer --
         fy = PAD_TOP + PAD_SIZE + 16
         canvas.create_text(PAD, fy, anchor="w",
-                           text=f"ZMQ PUB  →  tcp://localhost:{emulator.port}   samples: {emulator.sample_count}",
+                           text=f"ZMQ PUB  ->  tcp://localhost:{emulator.port}   samples: {emulator.sample_count}",
                            font=f_small, fill="#3ca03c", tags="dynamic")
         canvas.create_text(PAD, fy+22, anchor="w",
                            text="[ESC/Q] quit",

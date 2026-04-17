@@ -126,6 +126,8 @@ class LatentDynamics:
     """
 
     def __init__(self, config: DifficultyConfig, sample_rate: float = 10.0, seed: int = 42):
+        if sample_rate <= 0.0:
+            raise ValueError("sample_rate must be > 0")
         self.cfg = config
         self.dt = 1.0 / sample_rate
         self.t = 0.0
@@ -142,12 +144,23 @@ class LatentDynamics:
         self._nearest_strategy_idx = 0
 
     def set_class(self, class_idx: int | None) -> None:
+        if class_idx is None:
+            self.current_class = None
+            return
+        class_idx = int(class_idx)
+        if class_idx not in OPTIMAL_STRATEGIES:
+            raise ValueError(f"class_idx must be one of {sorted(OPTIMAL_STRATEGIES)} or None")
         self.current_class = class_idx
 
     def update_strategy(self, delta: np.ndarray) -> None:
         """Move z_strategy by one arrow-key update, clamped to [-1, 1]^2."""
+        delta_arr = np.asarray(delta, dtype=float).reshape(-1)
+        if delta_arr.shape != (N_STRATEGY_DIMS,):
+            raise ValueError(f"delta must have shape ({N_STRATEGY_DIMS},)")
+        if not np.all(np.isfinite(delta_arr)):
+            raise ValueError("delta must contain only finite values")
         self.z_strategy = np.clip(
-            self.z_strategy + np.asarray(delta, dtype=float) * self.cfg.strategy_speed,
+            self.z_strategy + delta_arr * self.cfg.strategy_speed,
             -1.0,
             1.0,
         )

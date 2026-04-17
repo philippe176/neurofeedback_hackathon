@@ -15,15 +15,17 @@ const CLASS_NAMES = {
 const ABBR = ['LH', 'RH', 'LL', 'RL'];
 
 const THEME = {
-    bg: '#0c1221',
-    panel: '#121a2d',
-    grid: '#243149',
-    text: '#e2e8f0',
-    muted: '#94a3b8',
-    accent: '#7dd3fc',
-    success: '#34d399',
-    warning: '#fbbf24',
-    danger: '#f87171',
+    bg: '#07131d',
+    panel: '#0c2230',
+    grid: 'rgba(145, 193, 214, 0.16)',
+    text: '#edf6fb',
+    muted: '#9bb5c4',
+    accent: '#5fd0e6',
+    success: '#3ed598',
+    warning: '#f7bf52',
+    danger: '#f0736b',
+    font: '"IBM Plex Sans", "Segoe UI", sans-serif',
+    display: '"Space Grotesk", "Trebuchet MS", sans-serif',
 };
 
 let socket = null;
@@ -261,6 +263,9 @@ function syncTrainingState(data) {
     if (data.session) {
         sessionState = data.session;
     }
+    if (data.game !== undefined) {
+        gameState = data.game;
+    }
 }
 
 function renderAll() {
@@ -275,8 +280,10 @@ function renderAll() {
 }
 
 function renderPanels() {
+    applyBodyState();
     updateConnectionStatus();
     updateHeaderStatus();
+    updateOverviewStrip();
     updateTrainingPhaseSelection();
     updateStreamPanel();
     updateModelSelection();
@@ -287,6 +294,11 @@ function renderPanels() {
     updateSignalPanel();
     updateTrainingPanel();
     updateExplorationPanel();
+}
+
+function applyBodyState() {
+    document.body.dataset.phase = trainingPhase || 'calibration';
+    document.body.dataset.stream = (streamState && streamState.state) || 'idle';
 }
 
 function updateConnectionStatus() {
@@ -305,6 +317,18 @@ function updateHeaderStatus() {
     const state = streamState.state || 'idle';
     elem.textContent = labelForStreamState(state);
     elem.className = `status-pill ${state}`;
+    applyBodyState();
+}
+
+function updateOverviewStrip() {
+    const difficulty = latestData && latestData.difficulty_name
+        ? latestData.difficulty_name
+        : 'Waiting for emulator';
+    document.getElementById('overview-phase').textContent = trainingPhaseName || 'Teach';
+    document.getElementById('overview-model').textContent = currentModelName || 'DNN Decoder';
+    document.getElementById('overview-viz').textContent = currentVizName || 'Neural Projection';
+    document.getElementById('overview-stream').textContent = labelForStreamState((streamState && streamState.state) || 'idle');
+    document.getElementById('overview-difficulty').textContent = difficulty;
 }
 
 function updateStreamingButtons() {
@@ -415,7 +439,7 @@ function updateStatusCards() {
     if (zone.source === 'centroid' && typeof zone.distance === 'number') {
         document.getElementById('zone-detail').textContent = `Distance ${zone.distance.toFixed(2)} from zone center.`;
     } else if (zone.source === 'prediction') {
-        document.getElementById('zone-detail').textContent = 'Estimating zones — showing prediction.';
+        document.getElementById('zone-detail').textContent = 'Estimating zones - showing prediction.';
     } else {
         document.getElementById('zone-detail').textContent = 'Your position on the map becomes the zone feedback.';
     }
@@ -533,7 +557,7 @@ function updateExplorationPanel() {
     listEl.innerHTML = analysis.clusters.map((c) => `
         <div class="key-metric${c.is_best ? ' highlight' : ''}">
             <span class="metric-label">Strategy ${c.cluster_id + 1} (${c.size} pts)</span>
-            <span class="metric-value">${(c.confidence * 100).toFixed(1)}%${c.is_best ? ' ★' : ''}</span>
+            <span class="metric-value">${(c.confidence * 100).toFixed(1)}%${c.is_best ? ' *' : ''}</span>
         </div>
     `).join('');
 
@@ -677,7 +701,7 @@ function updateManifoldPlot(data) {
             textfont: {
                 color: CLASS_COLORS[idx],
                 size: 12,
-                family: 'Trebuchet MS, sans-serif',
+                family: THEME.display,
             },
             marker: {
                 color: CLASS_COLORS[idx],
@@ -913,7 +937,7 @@ function manifoldLayout() {
     return {
         paper_bgcolor: THEME.panel,
         plot_bgcolor: THEME.panel,
-        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        font: { color: THEME.muted, family: THEME.font },
         margin: { t: 24, r: 20, b: 48, l: 52 },
         xaxis: {
             title: 'Latent Zone X',
@@ -938,7 +962,7 @@ function explorationLayout() {
     return {
         paper_bgcolor: THEME.panel,
         plot_bgcolor: THEME.panel,
-        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        font: { color: THEME.muted, family: THEME.font },
         margin: { t: 24, r: 20, b: 48, l: 52 },
         xaxis: {
             title: 'Strategy Axis X',
@@ -963,7 +987,7 @@ function probsLayout() {
     return {
         paper_bgcolor: THEME.panel,
         plot_bgcolor: THEME.panel,
-        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        font: { color: THEME.muted, family: THEME.font },
         margin: { t: 24, r: 20, b: 40, l: 40 },
         xaxis: {
             ticktext: ABBR,
@@ -981,7 +1005,7 @@ function metricsLayout() {
     return {
         paper_bgcolor: THEME.panel,
         plot_bgcolor: THEME.panel,
-        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        font: { color: THEME.muted, family: THEME.font },
         margin: { t: 18, r: 20, b: 40, l: 46 },
         xaxis: {
             title: 'Recent Samples',

@@ -54,3 +54,19 @@ def test_model_config_rejects_invalid_viz_method() -> None:
 def test_model_config_rejects_invalid_viz_refit_every() -> None:
     with pytest.raises(ValueError, match="viz_refit_every"):
         ModelConfig(viz_refit_every=0)
+
+
+def test_model_config_rejects_invalid_buffer_relationships() -> None:
+    with pytest.raises(ValueError, match="min_buffer_before_updates"):
+        ModelConfig(buffer_size=32, min_buffer_before_updates=64)
+
+
+def test_model_config_rejects_invalid_runtime_values() -> None:
+    with pytest.raises(ValueError, match="reward_baseline_alpha"):
+        ModelConfig(reward_baseline_alpha=1.5)
+
+    with pytest.raises(ValueError, match="queue_capacity"):
+        ModelConfig(queue_capacity=0)
+
+    with pytest.raises(ValueError, match="heartbeat_every"):
+        ModelConfig(heartbeat_every=0)

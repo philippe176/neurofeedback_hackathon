@@ -90,10 +90,34 @@ class ModelConfig:
         allowed_viz_methods = {"neural", "pca", "lda", "tsne", "umap"}
         if self.projection_dim not in (2, 3):
             raise ValueError("projection_dim must be 2 or 3")
+        if self.hidden_dim < 1:
+            raise ValueError("hidden_dim must be >= 1")
+        if self.embedding_dim < 1:
+            raise ValueError("embedding_dim must be >= 1")
+        if self.n_classes < 2:
+            raise ValueError("n_classes must be >= 2")
+        if not (0.0 <= self.dropout < 1.0):
+            raise ValueError("dropout must be in [0, 1)")
+        if self.lr <= 0.0:
+            raise ValueError("lr must be > 0")
+        if self.weight_decay < 0.0:
+            raise ValueError("weight_decay must be >= 0")
+        if self.grad_clip_norm <= 0.0:
+            raise ValueError("grad_clip_norm must be > 0")
+        if self.buffer_size < 1:
+            raise ValueError("buffer_size must be >= 1")
         if self.batch_size < 2:
             raise ValueError("batch_size must be at least 2")
+        if self.min_buffer_before_updates < 1:
+            raise ValueError("min_buffer_before_updates must be >= 1")
+        if self.min_buffer_before_updates > self.buffer_size:
+            raise ValueError("min_buffer_before_updates must be <= buffer_size")
         if self.update_every < 1:
             raise ValueError("update_every must be >= 1")
+        if self.warmup_labeled_samples < 0:
+            raise ValueError("warmup_labeled_samples must be >= 0")
+        if not (0.0 <= self.reward_baseline_alpha <= 1.0):
+            raise ValueError("reward_baseline_alpha must be in [0,1]")
         if self.viz_method not in allowed_viz_methods:
             raise ValueError(f"viz_method must be one of {sorted(allowed_viz_methods)}")
         if self.viz_fit_window < 10:
@@ -102,6 +126,12 @@ class ModelConfig:
             raise ValueError("viz_refit_every must be >= 1")
         if self.viz_tsne_perplexity <= 0.0:
             raise ValueError("viz_tsne_perplexity must be > 0")
+        if self.queue_capacity < 1:
+            raise ValueError("queue_capacity must be >= 1")
+        if self.receiver_timeout_ms < 1:
+            raise ValueError("receiver_timeout_ms must be >= 1")
+        if self.heartbeat_every < 1:
+            raise ValueError("heartbeat_every must be >= 1")
         if self.latent_sep_margin <= 0.0:
             raise ValueError("latent_sep_margin must be > 0")
         if self.projection_sep_margin <= 0.0:
@@ -112,6 +142,8 @@ class ModelConfig:
             raise ValueError("contrastive_weight must be >= 0")
         if self.contrastive_temperature <= 0.0:
             raise ValueError("contrastive_temperature must be > 0")
+        if self.reward_min > self.reward_max:
+            raise ValueError("reward_min must be <= reward_max")
         if self.class_weights is not None:
             if len(self.class_weights) != self.n_classes:
                 raise ValueError("class_weights must have length n_classes")

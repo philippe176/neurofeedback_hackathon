@@ -10,6 +10,14 @@ class LevelPolicy:
     min_confidence: float
     min_margin: float
 
+    def __post_init__(self) -> None:
+        if self.hit_window_s <= 0.0:
+            raise ValueError("hit_window_s must be > 0")
+        if self.beat_interval_s <= 0.0:
+            raise ValueError("beat_interval_s must be > 0")
+        if not (0.0 <= self.min_confidence <= 1.0):
+            raise ValueError("min_confidence must be in [0, 1]")
+
 
 @dataclass(slots=True)
 class RhythmGameConfig:
@@ -74,6 +82,14 @@ class RhythmGameConfig:
             raise ValueError("auto_blend must be in [0,1]")
         if self.auto_anticipation_s < 0.0:
             raise ValueError("auto_anticipation_s must be >= 0")
+        if not (0.0 <= self.confusion_confidence_threshold <= 1.0):
+            raise ValueError("confusion_confidence_threshold must be in [0,1]")
+        if not (0.0 <= self.margin_ema_alpha <= 1.0):
+            raise ValueError("margin_ema_alpha must be in [0,1]")
+        if not (0.0 <= self.promote_hit_rate <= 1.0):
+            raise ValueError("promote_hit_rate must be in [0,1]")
+        if not (0.0 <= self.demote_hit_rate <= 1.0):
+            raise ValueError("demote_hit_rate must be in [0,1]")
 
         if not self.levels:
             self.levels = (
