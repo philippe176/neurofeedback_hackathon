@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import torch
 from torch import nn
@@ -41,6 +43,18 @@ class OnlineTrainer:
             weight_decay=cfg.weight_decay,
         )
 
+        # LR warmup + cosine decay
+        self._warmup_updates = 200
+        self._lr_min = 1e-4
+        self.scheduler = None  # Created after first update
+
+        # EMA teacher for stable inference
+        self.ema_model = copy.deepcopy(self.model)
+        self.ema_model.eval()
+        self._ema_momentum = 0.995
+        for p in self.ema_model.parameters():
+            p.requires_grad_(False)
+
         self.buffer = ExperienceReplayBuffer(cfg.buffer_size)
         self.step_count = 0
         self.num_updates = 0
@@ -55,10 +69,10 @@ class OnlineTrainer:
         sample: StreamSample,
         training_label: int | None | object = _USE_SAMPLE_LABEL,
     ) -> InferenceStep:
-        self.model.eval()
+        self.ema_model.eval()
         with torch.no_grad():
             x = torch.from_numpy(sample.embedding).to(self.device, dtype=torch.float32).unsqueeze(0)
-            out = self.model(x)
+            out = self.ema_model(x)
 
         probs = out.probs.squeeze(0).cpu().numpy()
         adjust_fn = getattr(self.reward_provider, "adjust_probabilities", None)
@@ -144,7 +158,7 @@ class OnlineTrainer:
         return True
 
     def _update_model(self) -> TrainingMetrics:
-        batch = self.buffer.sample_recent(self.cfg.batch_size)
+        batch = self.buffer.sample_stratified(self.cfg.batch_size)
         if not batch:
             return _empty_metrics(rl_enabled=False)
 
@@ -237,6 +251,8 @@ class OnlineTrainer:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
         self.optimizer.step()
         self.num_updates += 1
+        self._update_ema()
+        self._step_lr()
 
         with torch.no_grad():
             within_z, between_z, fisher_z = geometry_statistics(
@@ -290,6 +306,30 @@ class OnlineTrainer:
             self._baseline_initialized = True
             return
         self.reward_baseline = (1.0 - alpha) * self.reward_baseline + alpha * reward
+
+    def _update_ema(self) -> None:
+        """Exponential moving average update of the teacher model."""
+        momentum = self._ema_momentum
+        for ema_p, live_p in zip(self.ema_model.parameters(), self.model.parameters()):
+            ema_p.data.mul_(momentum).add_(live_p.data, alpha=1.0 - momentum)
+        for ema_b, live_b in zip(self.ema_model.buffers(), self.model.buffers()):
+            ema_b.data.copy_(live_b.data)
+
+    def _step_lr(self) -> None:
+        """Linear warmup followed by cosine decay."""
+        import math
+
+        base_lr = self.cfg.lr
+        n = self.num_updates
+
+        if n <= self._warmup_updates:
+            lr = base_lr * (n / max(1, self._warmup_updates))
+        else:
+            progress = (n - self._warmup_updates) / max(1, 2000)
+            lr = self._lr_min + 0.5 * (base_lr - self._lr_min) * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = lr
 
 
 def _empty_metrics(rl_enabled: bool) -> TrainingMetrics:

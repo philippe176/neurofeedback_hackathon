@@ -17,6 +17,7 @@ class ExperienceReplayBuffer:
         self._capacity = capacity
         self._data: collections.deque[Experience] = collections.deque(maxlen=capacity)
         self._lock = threading.Lock()
+        self._rng = np.random.default_rng(42)
 
     def append(self, exp: Experience) -> None:
         with self._lock:
@@ -27,11 +28,95 @@ class ExperienceReplayBuffer:
             return len(self._data)
 
     def sample_recent(self, n: int) -> list[Experience]:
+        """Return the last *n* items sequentially (legacy fallback)."""
         with self._lock:
             if not self._data:
                 return []
             n = min(n, len(self._data))
             return list(self._data)[-n:]
+
+    def sample_stratified(self, n: int, recency_bias: float = 0.7) -> list[Experience]:
+        """Class-balanced sampling with recency bias.
+
+        *recency_bias* controls the share drawn from the most recent quarter
+        of the buffer; the rest is drawn uniformly.  Within each pool the
+        method tries to draw equal counts per class so that the model never
+        trains on a single class just because the operator held one key.
+        """
+        with self._lock:
+            total = len(self._data)
+            if total == 0:
+                return []
+            n = min(n, total)
+            data_list = list(self._data)
+
+            recent_cutoff = max(1, total // 4)
+            recent_pool = data_list[-recent_cutoff:]
+            full_pool = data_list
+
+            n_recent = min(int(n * recency_bias), len(recent_pool))
+            n_uniform = n - n_recent
+
+            recent_batch = self._balanced_draw(recent_pool, n_recent)
+            uniform_batch = self._balanced_draw(full_pool, n_uniform)
+
+            combined = recent_batch + uniform_batch
+            self._rng.shuffle(combined)
+            return combined[:n]
+
+    def _balanced_draw(self, pool: list[Experience], n: int) -> list[Experience]:
+        """Draw *n* items from *pool* balancing across classes."""
+        if n <= 0 or not pool:
+            return []
+
+        by_class: dict[int, list[int]] = {}
+        unlabeled: list[int] = []
+        for idx, exp in enumerate(pool):
+            if exp.label >= 0:
+                by_class.setdefault(exp.label, []).append(idx)
+            else:
+                unlabeled.append(idx)
+
+        selected_indices: list[int] = []
+
+        if by_class:
+            classes = sorted(by_class.keys())
+            per_class = max(1, n // len(classes))
+            remainder = n - per_class * len(classes)
+
+            for cls in classes:
+                indices = by_class[cls]
+                take = min(per_class, len(indices))
+                chosen = self._rng.choice(indices, size=take, replace=False).tolist()
+                selected_indices.extend(chosen)
+
+            # Distribute remainder across classes with most samples
+            if remainder > 0:
+                all_remaining = []
+                used = set(selected_indices)
+                for cls in classes:
+                    all_remaining.extend(i for i in by_class[cls] if i not in used)
+                if all_remaining:
+                    take = min(remainder, len(all_remaining))
+                    extra = self._rng.choice(all_remaining, size=take, replace=False).tolist()
+                    selected_indices.extend(extra)
+        else:
+            # No labeled data — draw uniformly from unlabeled
+            take = min(n, len(unlabeled))
+            if take:
+                selected_indices = self._rng.choice(unlabeled, size=take, replace=False).tolist()
+
+        # Fill any shortfall from the full pool
+        shortfall = n - len(selected_indices)
+        if shortfall > 0:
+            used = set(selected_indices)
+            remaining = [i for i in range(len(pool)) if i not in used]
+            if remaining:
+                take = min(shortfall, len(remaining))
+                extra = self._rng.choice(remaining, size=take, replace=False).tolist()
+                selected_indices.extend(extra)
+
+        return [pool[i] for i in selected_indices]
 
     def labeled_count(self) -> int:
         with self._lock:

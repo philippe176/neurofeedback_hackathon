@@ -16,7 +16,7 @@ class ModelConfig:
     dropout: float = 0.10
 
     # Optimization - slightly higher LR for faster online adaptation
-    lr: float = 2e-3
+    lr: float = 8e-4
     weight_decay: float = 1e-4
     grad_clip_norm: float = 1.0
 
@@ -45,10 +45,10 @@ class ModelConfig:
     lambda_proj_sep: float = 0.25      # Increased from 0.05 - push clusters apart
     lambda_proj_temp: float = 0.02
     contrastive_weight: float = 0.10
-    contrastive_temperature: float = 0.20
+    contrastive_temperature: float = 0.50
 
-    latent_sep_margin: float = 0.80
-    projection_sep_margin: float = 0.45
+    latent_sep_margin: float = 2.0
+    projection_sep_margin: float = 1.2
     classification_focal_gamma: float | None = 1.0  # Focal loss helps focus on hard examples
     class_weights: tuple[float, ...] | None = None
 

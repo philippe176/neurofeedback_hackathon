@@ -64,24 +64,20 @@ if importlib.util.find_spec("umap") is not None:
     AVAILABLE_VIZ_METHODS["umap"] = "UMAP Projection"
 
 AVAILABLE_TRAINING_PHASES = {
-    "calibration": "Guided Calibration",
-    "feedback": "Neurofeedback Coach",
-    "exploration": "Strategy Exploration",
+    "calibration": "Teach",
+    "feedback": "Practice",
+    "exploration": "Explore",
 }
 
 TRAINING_PHASE_DESCRIPTIONS = {
     "calibration": (
-        "Follow the requested task in the emulator, repeat it consistently, "
-        "and build four clearly separated latent clusters."
+        "Show the decoder what each movement looks like by repeating tasks consistently."
     ),
     "feedback": (
-        "Watch what the model thinks you are doing. If it reads the wrong task, "
-        "change strategy until the prediction and zone both move where you want."
+        "The decoder coaches you in real time. Adjust until its prediction matches your intention."
     ),
     "exploration": (
-        "Model is frozen. Focus on one movement class and explore different "
-        "strategies. The system will cluster your approaches and identify "
-        "which one the decoder reads most confidently."
+        "Model is frozen. Focus on one movement and discover which strategy the decoder reads best."
     ),
 }
 
@@ -240,7 +236,7 @@ class EmulatorBridge:
         self.training_phase = normalized
 
         if self.trainer is not None:
-            self.trainer.frozen = (normalized != "calibration")
+            self.trainer.frozen = (normalized == "exploration")
 
         if normalized == "exploration":
             self._exploration_penultimate = []
@@ -605,45 +601,29 @@ class EmulatorBridge:
 
         if predicted_class == current_label and score >= 0.74:
             state = "good"
-            headline = "Keep this strategy"
-            message = (
-                f"The model agrees that you are using {target_name}. Hold the same pattern so the current zone stays there and the cluster keeps separating."
-            )
+            headline = "Great match"
+            message = f"Model reads {target_name}. Hold this strategy."
         elif predicted_class == current_label:
             state = "hold"
-            headline = "Hold it a little longer"
-            message = (
-                f"The model is reading {target_name}, but the signal is still settling. "
-                "Stay with the same strategy until the target bar becomes more dominant."
-            )
+            headline = "Hold steady"
+            message = f"Reading {target_name} — signal still settling."
         elif target_margin > -0.10:
             state = "adjust"
-            headline = "Small adjustment"
-            message = (
-                f"The model is close, but it still leans toward {predicted_name}. "
-                "Nudge the strategy until your intended task becomes the highest bar."
-            )
+            headline = "Adjust now"
+            message = f"Close — nudge away from {predicted_name}."
         elif self._strategy_qualities and self._strategy_qualities[-1] < 0.40:
             state = "recover"
-            headline = "Recover the strategy"
-            message = (
-                f"The model is reading {predicted_name}, and the strategy looks unstable. "
-                "Re-center with the arrows, then try a cleaner version of the intended task."
-            )
+            headline = "Reset strategy"
+            message = "Signal unstable. Re-center arrows first."
         else:
             state = "recover"
             headline = "Change strategy"
-            message = (
-                f"The model thinks you are doing {predicted_name}, not {target_name}. "
-                "If you do not like that readout, keep changing strategy until the prediction matches your intention."
-            )
+            message = f"Reads {predicted_name}, not {target_name}. Keep adjusting."
 
         if self.training_phase == "calibration" and calibration["ready"]:
             state = "ready"
-            headline = "Calibration is ready"
-            message = (
-                "The four tasks are forming distinct zones. You can switch to Neurofeedback Coach mode and focus on real-time correction."
-            )
+            headline = "Ready to practice"
+            message = "Four task zones formed. Switch to Practice mode."
 
         return {
             "state": state,
@@ -662,7 +642,7 @@ class EmulatorBridge:
             reward_provider=self.reward_provider,
             device=self.device,
         )
-        self.trainer.frozen = (self.training_phase != "calibration")
+        self.trainer.frozen = (self.training_phase == "exploration")
 
     def _ensure_decoder_ready(self, input_dim: int) -> None:
         input_dim = int(input_dim)
@@ -708,7 +688,7 @@ class EmulatorBridge:
         ) if self._transition_ignored else 0
 
     def _training_label_for_sample(self, sample: StreamSample) -> int | None:
-        if self.training_phase != "calibration":
+        if self.training_phase == "exploration":
             return None
         if sample.label is None:
             return None

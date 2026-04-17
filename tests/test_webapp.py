@@ -205,11 +205,13 @@ def test_emulator_bridge_ignores_first_40_samples_after_label_change():
 
 
 def test_emulator_bridge_freezes_model_and_graph_outside_calibration():
+    """Feedback mode continues training (co-adaptation); only exploration freezes."""
     from webapp.emulator_bridge import EmulatorBridge
 
     calibration_samples = make_training_samples(n_per_class=55, contiguous=True)
     feedback_samples = [make_sample(220 + i, 0) for i in range(50)]
-    receiver = FakeReceiver(calibration_samples + feedback_samples)
+    exploration_samples = [make_sample(270 + i, 0) for i in range(50)]
+    receiver = FakeReceiver(calibration_samples + feedback_samples + exploration_samples)
     bridge = EmulatorBridge(
         receiver=receiver,
         calibration_samples_per_class=12,
@@ -221,20 +223,25 @@ def test_emulator_bridge_freezes_model_and_graph_outside_calibration():
         last = bridge.step(timeout=0.0)
 
     assert last is not None
-    frozen_cluster_points = list(last["cluster_points"])
-    frozen_centroids = dict(last["centroids"])
     updates_before = last["training"]["num_updates"]
 
+    # Feedback mode: model keeps training (co-adaptation)
     bridge.set_training_phase("feedback")
+    for _ in range(50):
+        last = bridge.step(timeout=0.0)
 
+    assert last is not None
+    assert last["training"]["num_updates"] > updates_before  # training continues
+
+    # Exploration mode: model freezes
+    updates_after_feedback = last["training"]["num_updates"]
+    bridge.set_training_phase("exploration")
     for _ in range(50):
         last = bridge.step(timeout=0.0)
 
     assert last is not None
     assert last["graph_frozen"] is True
-    assert last["cluster_points"] == frozen_cluster_points
-    assert last["centroids"] == frozen_centroids
-    assert last["training"]["num_updates"] == updates_before
+    assert last["training"]["num_updates"] == updates_after_feedback  # frozen
 
 
 def test_emulator_bridge_can_switch_model_and_viz_before_samples():
@@ -324,7 +331,7 @@ def test_set_training_phase_route_updates_status():
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["training_phase"] == "feedback"
-    assert payload["training_phase_name"] == "Neurofeedback Coach"
+    assert payload["training_phase_name"] == "Practice"
 
 
 def test_set_model_and_viz_routes_update_status():
