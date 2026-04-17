@@ -30,6 +30,50 @@
                 </section>
 
                 <section class="control-section">
+                    <h2>Training Phase</h2>
+                    <p id="training-phase-description" class="help-text">Follow the shown task cue and repeat a stable strategy until each label forms a distinct cluster.</p>
+                    <div class="mode-buttons phase-buttons">
+                        <button id="phase-calibration" class="btn btn-model btn-phase active" data-phase="calibration">
+                            <span class="model-title">Guided Calibration</span>
+                            <span class="model-description">Collect labeled attempts and build a clean latent space.</span>
+                        </button>
+                        <button id="phase-feedback" class="btn btn-model btn-phase" data-phase="feedback">
+                            <span class="model-title">Neurofeedback Coach</span>
+                            <span class="model-description">Use prompt timing, reward, and separation to reinforce the best strategy.</span>
+                        </button>
+                        <button id="phase-manual" class="btn btn-model btn-phase" data-phase="manual">
+                            <span class="model-title">Manual Sandbox</span>
+                            <span class="model-description">Directly pick classes yourself for debugging and demos.</span>
+                        </button>
+                    </div>
+                    <div class="state-display compact-display">
+                        <div class="state-row">
+                            <span class="state-label">Active Phase:</span>
+                            <span id="training-phase-name" class="state-value">Guided Calibration</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Emulator Difficulty</h2>
+                    <p class="help-text">Choose the disturbance pattern the simulated user must counter with strategy adjustments.</p>
+                    <label class="input-label" for="difficulty-select">Difficulty Pattern</label>
+                    <select id="difficulty-select" class="text-input">
+                        <option value="d1">D1 - Cardinal Pulses</option>
+                        <option value="d2">D2 - Diagonal Pulses</option>
+                        <option value="d3">D3 - Double-Tap Rhythm</option>
+                        <option value="d4">D4 - Rotating Force</option>
+                        <option value="d5">D5 - Dual-Frequency Drive</option>
+                    </select>
+                    <div class="state-display compact-display">
+                        <div class="state-row">
+                            <span class="state-label">Active Pattern:</span>
+                            <span id="difficulty-name" class="state-value">D1 - Cardinal Pulses</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
                     <h2>Auto-Tracking</h2>
                     <p class="help-text">When enabled, the system automatically cycles through mental states with optimal strategy.</p>
                     <button id="btn-tracking" class="btn btn-secondary">Enable Auto-Tracking</button>
@@ -40,8 +84,33 @@
                 </section>
 
                 <section class="control-section">
+                    <h2>Input Mode</h2>
+                    <p class="help-text">Switch to keyboard emulator mode to drive the patient with arrow keys. Use `1-4` to set the class and `0` for rest.</p>
+                    <div class="mode-buttons">
+                        <button id="mode-buttons" class="btn btn-model btn-mode active" data-control-mode="buttons">
+                            <span class="model-title">Button Controls</span>
+                            <span class="model-description">Click the class buttons below for manual state changes.</span>
+                        </button>
+                        <button id="mode-keyboard" class="btn btn-model btn-mode" data-control-mode="keyboard">
+                            <span class="model-title">Keyboard Emulator</span>
+                            <span class="model-description">Arrow keys steer strategy continuously like the original emulator.</span>
+                        </button>
+                    </div>
+                    <div class="state-display compact-display">
+                        <div class="state-row">
+                            <span class="state-label">Active Mode:</span>
+                            <span id="control-mode-name" class="state-value">Button Controls</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Held Arrows:</span>
+                            <span id="pressed-arrows" class="state-value">None</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
                     <h2>Mental State Selection</h2>
-                    <p class="help-text">Click to simulate the corresponding mental state (imagined movement).</p>
+                    <p id="manual-class-help" class="help-text">Manual sandbox only. Click to simulate the corresponding mental state. These same classes are also available through the keyboard emulator hotkeys.</p>
                     <div class="class-buttons">
                         <button class="btn btn-class" data-class="0">
                             <span class="class-icon">LH</span>
@@ -67,6 +136,42 @@
                 </section>
 
                 <section class="control-section">
+                    <h2>Prompt Coach</h2>
+                    <div class="prompt-card">
+                        <div class="prompt-card-header">
+                            <span id="prompt-guided-badge" class="prompt-badge">Guided Prompt</span>
+                            <span id="prompt-window-state" class="prompt-window waiting">Waiting</span>
+                        </div>
+                        <div class="prompt-grid">
+                            <div class="prompt-column">
+                                <span class="prompt-label">Now</span>
+                                <span id="prompt-target-class" class="prompt-value">Left Hand</span>
+                                <span id="prompt-target-detail" class="prompt-detail">Window opens in 0.0s</span>
+                            </div>
+                            <div class="prompt-column">
+                                <span class="prompt-label">Next</span>
+                                <span id="prompt-next-class" class="prompt-value prompt-secondary">Right Hand</span>
+                                <span id="prompt-next-detail" class="prompt-detail">Next cue in 0.0s</span>
+                            </div>
+                        </div>
+                        <div class="progress-shell">
+                            <div id="prompt-progress-bar" class="progress-fill"></div>
+                        </div>
+                        <div id="coach-box" class="coach-box hold">
+                            <div class="coach-header-row">
+                                <span id="coach-headline" class="coach-headline">Calibration in progress</span>
+                                <span id="coach-score" class="coach-score">0%</span>
+                            </div>
+                            <p id="coach-message" class="coach-message">Keep collecting attempts for every task so each label forms its own cluster.</p>
+                            <div class="coach-meta">
+                                <span id="coach-score-label">Neurofeedback Score</span>
+                                <span id="coach-margin">Margin: 0.00</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
                     <h2>Centroid Window</h2>
                     <p class="help-text">Number of recent samples used to compute cluster centroids.</p>
                     <div class="slider-container">
@@ -78,6 +183,10 @@
                 <section class="control-section">
                     <h2>Current State</h2>
                     <div class="state-display">
+                        <div class="state-row">
+                            <span class="state-label">Target Task:</span>
+                            <span id="target-class" class="state-value">--</span>
+                        </div>
                         <div class="state-row">
                             <span class="state-label">Active Class:</span>
                             <span id="current-class" class="state-value">Rest</span>
@@ -123,6 +232,10 @@
                         <div class="state-row">
                             <span class="state-label">RL Enabled:</span>
                             <span id="rl-enabled" class="state-value">No</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Rolling Reward:</span>
+                            <span id="rolling-reward" class="state-value">--</span>
                         </div>
                     </div>
                 </section>
@@ -231,6 +344,70 @@
                 </section>
 
                 <section class="control-section">
+                    <h2>Session Progress</h2>
+                    <div class="state-display">
+                        <div class="state-row">
+                            <span class="state-label">Prompt Level:</span>
+                            <span id="session-level" class="state-value">--</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Streak:</span>
+                            <span id="session-streak" class="state-value">0</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Best Streak:</span>
+                            <span id="session-best-streak" class="state-value">0</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Hit Rate:</span>
+                            <span id="session-hit-rate" class="state-value">--</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Prompts / Hits:</span>
+                            <span id="session-prompts" class="state-value">0 / 0</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Calibration Readiness</h2>
+                    <div class="readiness-card">
+                        <div class="coach-header-row">
+                            <span id="calibration-state" class="coach-headline">Building Clusters</span>
+                            <span id="calibration-score" class="coach-score">0%</span>
+                        </div>
+                        <div class="progress-shell">
+                            <div id="calibration-progress-bar" class="progress-fill calibration-fill"></div>
+                        </div>
+                        <p id="calibration-message" class="coach-message">Keep collecting attempts for every task so each label forms its own cluster.</p>
+                        <div class="class-progress-grid">
+                            <div class="class-progress-chip">
+                                <span class="class-progress-label">LH</span>
+                                <span id="count-class-0" class="class-progress-count">0</span>
+                            </div>
+                            <div class="class-progress-chip">
+                                <span class="class-progress-label">RH</span>
+                                <span id="count-class-1" class="class-progress-count">0</span>
+                            </div>
+                            <div class="class-progress-chip">
+                                <span class="class-progress-label">LL</span>
+                                <span id="count-class-2" class="class-progress-count">0</span>
+                            </div>
+                            <div class="class-progress-chip">
+                                <span class="class-progress-label">RL</span>
+                                <span id="count-class-3" class="class-progress-count">0</span>
+                            </div>
+                        </div>
+                        <div class="state-display compact-display">
+                            <div class="state-row">
+                                <span class="state-label">Label Separation:</span>
+                                <span id="label-separation" class="state-value">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
                     <h2>Save Snapshot</h2>
                     <p class="help-text">Save the current decoder state with a custom name or use the suggested one.</p>
                     <div class="save-model-controls">
@@ -245,7 +422,7 @@
 
         <!-- Footer -->
         <footer class="footer">
-            <p>BCI Neurofeedback Hackathon - Real-time Movement Decoder</p>
+            <p>BCI Neurofeedback Hackathon - Guided calibration, latent-space coaching, and simulated strategy training</p>
         </footer>
     </div>
 

@@ -51,7 +51,20 @@ let currentModelType = 'dnn';
 let currentModelName = 'DNN Decoder';
 let currentVizMethod = 'neural';
 let currentVizName = 'Neural Projection';
+let controlMode = 'buttons';
+let controlModeName = 'Button Controls';
+let pressedArrows = [];
+let trainingPhase = 'calibration';
+let trainingPhaseName = 'Guided Calibration';
+let trainingPhaseDescription = 'Follow the shown task cue and repeat a stable strategy until each label forms a distinct cluster.';
+let currentDifficulty = 'd1';
+let currentDifficultyName = 'D1 - Cardinal Pulses';
+let promptState = null;
+let sessionState = null;
+let calibrationState = null;
+let coachState = null;
 let hasCustomSaveName = false;
+const activeKeyboardArrows = new Set();
 
 // ========================================
 // Initialization
@@ -92,12 +105,28 @@ function initializeSocket() {
     });
 
     socket.on('tracking_changed', (data) => {
-        autoTracking = data.auto_tracking;
-        updateTrackingButton();
+        syncControlState(data);
     });
 
     socket.on('error', (data) => {
         console.error('Server error:', data.message);
+    });
+
+    socket.on('control_mode_changed', (data) => {
+        syncControlState(data);
+    });
+
+    socket.on('control_state_changed', (data) => {
+        syncControlState(data);
+    });
+
+    socket.on('training_phase_changed', (data) => {
+        syncTrainingState(data);
+    });
+
+    socket.on('difficulty_changed', (data) => {
+        syncTrainingState(data);
+        updateSampleCounter(data.sample_count || 0);
     });
 
     socket.on('model_changed', (data) => {
@@ -210,6 +239,34 @@ function initializeControls() {
         socket.emit('toggle_tracking');
     });
 
+    document.querySelectorAll('.btn-phase').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const nextPhase = btn.dataset.phase;
+            if (nextPhase === trainingPhase) {
+                return;
+            }
+            socket.emit('set_training_phase', { training_phase: nextPhase });
+        });
+    });
+
+    document.getElementById('difficulty-select').addEventListener('change', (event) => {
+        const nextDifficulty = event.target.value;
+        if (nextDifficulty === currentDifficulty) {
+            return;
+        }
+        socket.emit('set_difficulty', { difficulty: nextDifficulty });
+    });
+
+    document.querySelectorAll('.btn-mode').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const nextMode = btn.dataset.controlMode;
+            if (nextMode === controlMode) {
+                return;
+            }
+            socket.emit('set_control_mode', { control_mode: nextMode });
+        });
+    });
+
     // Class selection buttons
     document.querySelectorAll('.btn-class').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -261,6 +318,15 @@ function initializeControls() {
     });
 
     document.getElementById('btn-save-model').addEventListener('click', saveModelSnapshot);
+
+    window.addEventListener('keydown', handleKeyboardControl, true);
+    window.addEventListener('keyup', handleKeyboardControl, true);
+    window.addEventListener('blur', releaseAllKeyboardArrows);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            releaseAllKeyboardArrows();
+        }
+    });
 }
 
 async function loadInitialStatus() {
@@ -271,6 +337,18 @@ async function loadInitialStatus() {
         isStreaming = data.streaming;
         currentClass = data.current_class;
         autoTracking = data.auto_tracking;
+        controlMode = data.control_mode || 'buttons';
+        controlModeName = (data.available_control_modes || {})[controlMode] || 'Button Controls';
+        pressedArrows = data.pressed_arrows || [];
+        trainingPhase = data.training_phase || 'calibration';
+        trainingPhaseName = data.training_phase_name || 'Guided Calibration';
+        trainingPhaseDescription = data.training_phase_description || trainingPhaseDescription;
+        currentDifficulty = data.difficulty || 'd1';
+        currentDifficultyName = data.difficulty_name || 'D1 - Cardinal Pulses';
+        promptState = data.prompt || null;
+        sessionState = data.session || null;
+        calibrationState = data.calibration || null;
+        coachState = data.coach || null;
         currentModelType = data.model_type || 'dnn';
         currentModelName = data.model_name || 'DNN Decoder';
         currentVizMethod = data.viz_method || 'neural';
@@ -279,6 +357,14 @@ async function loadInitialStatus() {
         updateStreamingButtons();
         updateClassButtons();
         updateTrackingButton();
+        updateControlModeSelection();
+        updatePressedArrowDisplay();
+        updateTrainingPhaseSelection();
+        updateDifficultySelection();
+        updatePromptCoachPanel();
+        updateSessionProgress();
+        updateCalibrationPanel();
+        updateClassControlAvailability();
         updateModelSelection();
         updateVisualizationSelection();
         ensureDefaultSaveName();
@@ -300,6 +386,7 @@ function handleUpdate(data) {
     updateMetricsPlot(data);
     updateClusterInfo(data);
     updateTrainingStatus(data);
+    syncTrainingState(data);
 
     // Update current class from server
     if (data.current_class !== currentClass) {
@@ -311,6 +398,8 @@ function handleUpdate(data) {
         autoTracking = data.auto_tracking;
         updateTrackingButton();
     }
+
+    syncControlState(data);
 
     if (data.model_type && data.model_type !== currentModelType) {
         currentModelType = data.model_type;
@@ -346,6 +435,10 @@ function updateSampleCounter(count) {
 }
 
 function updateStateDisplay(data) {
+    const targetName = data.prompt && data.prompt.target_class_name
+        ? data.prompt.target_class_name
+        : (data.current_class_name || '--');
+    document.getElementById('target-class').textContent = targetName;
     document.getElementById('current-class').textContent = data.current_class_name;
     document.getElementById('predicted-class').textContent = data.predicted_class_name;
     document.getElementById('confidence').textContent = `${(data.confidence * 100).toFixed(1)}%`;
@@ -362,6 +455,10 @@ function updateTrainingStatus(data) {
     document.getElementById('macro-f1').textContent =
         training.macro_f1 !== null ? `${(training.macro_f1 * 100).toFixed(1)}%` : '--';
     document.getElementById('rl-enabled').textContent = training.rl_enabled ? 'Yes' : 'No';
+    const rollingReward = data.session && typeof data.session.rolling_reward === 'number'
+        ? `${(data.session.rolling_reward * 100).toFixed(0)}%`
+        : '--';
+    document.getElementById('rolling-reward').textContent = rollingReward;
 }
 
 function updateClassButtons() {
@@ -370,6 +467,24 @@ function updateClassButtons() {
         const value = classIdx === 'null' ? null : parseInt(classIdx);
         btn.classList.toggle('active', value === currentClass);
     });
+}
+
+function updateClassControlAvailability() {
+    const manualOnly = trainingPhase !== 'manual';
+    document.querySelectorAll('.btn-class').forEach(btn => {
+        btn.disabled = manualOnly;
+    });
+
+    const help = document.getElementById('manual-class-help');
+    if (!help) {
+        return;
+    }
+
+    if (manualOnly) {
+        help.textContent = 'Class buttons are disabled in guided phases because the target cue is scheduled automatically. Switch to Manual Sandbox to force classes yourself.';
+    } else {
+        help.textContent = 'Manual sandbox only. Click to simulate the corresponding mental state. These same classes are also available through the keyboard emulator hotkeys.';
+    }
 }
 
 function updateTrackingButton() {
@@ -386,6 +501,218 @@ function updateTrackingButton() {
         btn.classList.remove('active');
         state.textContent = 'OFF';
         state.classList.remove('on');
+    }
+}
+
+function updateTrainingPhaseSelection() {
+    document.querySelectorAll('.btn-phase').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.phase === trainingPhase);
+    });
+
+    document.getElementById('training-phase-name').textContent = trainingPhaseName;
+    document.getElementById('training-phase-description').textContent = trainingPhaseDescription;
+    ensureDefaultSaveName();
+}
+
+function updateDifficultySelection() {
+    const select = document.getElementById('difficulty-select');
+    if (select && select.value !== currentDifficulty) {
+        select.value = currentDifficulty;
+    }
+    document.getElementById('difficulty-name').textContent = currentDifficultyName;
+}
+
+function updateControlModeSelection() {
+    document.querySelectorAll('.btn-mode').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.controlMode === controlMode);
+    });
+
+    document.getElementById('control-mode-name').textContent = controlModeName;
+}
+
+function updatePressedArrowDisplay() {
+    const elem = document.getElementById('pressed-arrows');
+    if (!pressedArrows.length) {
+        elem.textContent = 'None';
+        return;
+    }
+
+    const labels = pressedArrows.map(key => {
+        switch (key) {
+            case 'ArrowLeft':
+                return 'Left';
+            case 'ArrowRight':
+                return 'Right';
+            case 'ArrowUp':
+                return 'Up';
+            case 'ArrowDown':
+                return 'Down';
+            default:
+                return key;
+        }
+    });
+    elem.textContent = labels.join(', ');
+}
+
+function syncControlState(data) {
+    if (data.control_mode) {
+        controlMode = data.control_mode;
+    }
+    if (data.control_mode_name) {
+        controlModeName = data.control_mode_name;
+    } else if (controlMode === 'buttons') {
+        controlModeName = 'Button Controls';
+    } else if (controlMode === 'keyboard') {
+        controlModeName = 'Keyboard Emulator';
+    }
+    if (Array.isArray(data.pressed_arrows)) {
+        pressedArrows = data.pressed_arrows;
+        syncLocalPressedArrows();
+    }
+    if (typeof data.auto_tracking === 'boolean' && data.auto_tracking !== autoTracking) {
+        autoTracking = data.auto_tracking;
+        updateTrackingButton();
+    }
+    updateControlModeSelection();
+    updatePressedArrowDisplay();
+}
+
+function syncLocalPressedArrows() {
+    activeKeyboardArrows.clear();
+    pressedArrows.forEach(key => activeKeyboardArrows.add(key));
+}
+
+function syncTrainingState(data) {
+    if (data.training_phase) {
+        trainingPhase = data.training_phase;
+    }
+    if (data.training_phase_name) {
+        trainingPhaseName = data.training_phase_name;
+    }
+    if (data.training_phase_description) {
+        trainingPhaseDescription = data.training_phase_description;
+    }
+    if (data.difficulty) {
+        currentDifficulty = data.difficulty;
+    }
+    if (data.difficulty_name) {
+        currentDifficultyName = data.difficulty_name;
+    }
+    if (data.prompt) {
+        promptState = data.prompt;
+    }
+    if (data.session) {
+        sessionState = data.session;
+    }
+    if (data.calibration) {
+        calibrationState = data.calibration;
+    }
+    if (data.coach) {
+        coachState = data.coach;
+    }
+
+    updateTrainingPhaseSelection();
+    updateDifficultySelection();
+    updatePromptCoachPanel();
+    updateSessionProgress();
+    updateCalibrationPanel();
+    updateClassControlAvailability();
+}
+
+function updatePromptCoachPanel() {
+    const guided = !!(promptState && promptState.guided);
+    const badge = document.getElementById('prompt-guided-badge');
+    const windowState = document.getElementById('prompt-window-state');
+    const targetClass = document.getElementById('prompt-target-class');
+    const targetDetail = document.getElementById('prompt-target-detail');
+    const nextClass = document.getElementById('prompt-next-class');
+    const nextDetail = document.getElementById('prompt-next-detail');
+    const progressBar = document.getElementById('prompt-progress-bar');
+    const coachBox = document.getElementById('coach-box');
+
+    if (guided) {
+        badge.textContent = trainingPhase === 'calibration' ? 'Calibration Cue' : 'Neurofeedback Cue';
+        targetClass.textContent = promptState.target_class_name || '--';
+        targetDetail.textContent = promptState.window_open
+            ? `Act now - prompt ends in ${promptState.seconds_to_prompt_end.toFixed(1)}s`
+            : `Window opens in ${promptState.seconds_to_window_start.toFixed(1)}s`;
+        nextClass.textContent = promptState.next_target_class_name || '--';
+        nextDetail.textContent = `Next cue in ${promptState.seconds_to_next_prompt_start.toFixed(1)}s`;
+        windowState.textContent = promptState.window_open ? 'Window Open' : 'Get Ready';
+        windowState.className = `prompt-window ${promptState.window_open ? 'open' : 'waiting'}`;
+        progressBar.style.width = `${Math.max(0, Math.min(100, (promptState.progress || 0) * 100))}%`;
+        progressBar.style.background = promptState.window_open
+            ? 'linear-gradient(90deg, #22c55e, #86efac)'
+            : 'linear-gradient(90deg, #38bdf8, #60a5fa)';
+    } else {
+        badge.textContent = 'Manual Sandbox';
+        targetClass.textContent = currentClass === null ? 'Pick a class' : (CLASS_NAMES[currentClass] || '--');
+        targetDetail.textContent = 'Choose the imagined movement yourself.';
+        nextClass.textContent = 'Free play';
+        nextDetail.textContent = 'No scheduled prompt';
+        windowState.textContent = 'Manual';
+        windowState.className = 'prompt-window waiting';
+        progressBar.style.width = '0%';
+        progressBar.style.background = 'linear-gradient(90deg, #38bdf8, #60a5fa)';
+    }
+
+    const nextState = coachState && coachState.state ? coachState.state : 'hold';
+    coachBox.className = `coach-box ${nextState}`;
+    document.getElementById('coach-headline').textContent = coachState && coachState.headline
+        ? coachState.headline
+        : 'Calibration in progress';
+    document.getElementById('coach-message').textContent = coachState && coachState.message
+        ? coachState.message
+        : 'Keep repeating the strategy that makes the model more confident.';
+    document.getElementById('coach-score-label').textContent = coachState && coachState.score_label
+        ? coachState.score_label
+        : 'Neurofeedback Score';
+    document.getElementById('coach-score').textContent = coachState && typeof coachState.score === 'number'
+        ? `${(coachState.score * 100).toFixed(0)}%`
+        : '--';
+    const margin = coachState && typeof coachState.target_margin === 'number'
+        ? coachState.target_margin
+        : 0;
+    document.getElementById('coach-margin').textContent = `Margin: ${margin.toFixed(2)}`;
+}
+
+function updateSessionProgress() {
+    const session = sessionState || {};
+    document.getElementById('session-level').textContent =
+        session.guided && session.level !== null && session.level !== undefined ? session.level : '--';
+    document.getElementById('session-streak').textContent = session.streak ?? 0;
+    document.getElementById('session-best-streak').textContent = session.best_streak ?? 0;
+    document.getElementById('session-hit-rate').textContent =
+        typeof session.hit_rate === 'number' && session.guided ? `${(session.hit_rate * 100).toFixed(0)}%` : '--';
+    document.getElementById('session-prompts').textContent =
+        `${session.total_prompts ?? 0} / ${session.total_hits ?? 0}`;
+}
+
+function updateCalibrationPanel() {
+    const calibration = calibrationState || {};
+    const readiness = typeof calibration.readiness === 'number' ? calibration.readiness : 0;
+    document.getElementById('calibration-state').textContent = calibration.ready
+        ? 'Ready For Feedback'
+        : 'Building Clusters';
+    document.getElementById('calibration-score').textContent = `${(readiness * 100).toFixed(0)}%`;
+    document.getElementById('calibration-progress-bar').style.width =
+        `${Math.max(0, Math.min(100, readiness * 100))}%`;
+    document.getElementById('calibration-message').textContent = calibration.message
+        || 'Keep collecting attempts for every task so each label forms its own cluster.';
+
+    const counts = calibration.label_counts || {};
+    for (let cls = 0; cls < 4; cls++) {
+        document.getElementById(`count-class-${cls}`).textContent = counts[String(cls)] ?? 0;
+    }
+
+    if (typeof calibration.mean_label_separation === 'number') {
+        const minSep = typeof calibration.min_label_separation === 'number'
+            ? calibration.min_label_separation.toFixed(2)
+            : '--';
+        const meanSep = calibration.mean_label_separation.toFixed(2);
+        document.getElementById('label-separation').textContent = `Min ${minSep} | Mean ${meanSep}`;
+    } else {
+        document.getElementById('label-separation').textContent = '--';
     }
 }
 
@@ -421,7 +748,7 @@ function updateClusterInfo(data) {
 }
 
 function buildDefaultSaveName() {
-    return `${currentModelType}_${currentVizMethod}`;
+    return `${currentModelType}_${currentVizMethod}_${trainingPhase}`;
 }
 
 function ensureDefaultSaveName(force = false) {
@@ -473,12 +800,74 @@ async function saveModelSnapshot() {
     }
 }
 
+function handleKeyboardControl(event) {
+    if (controlMode !== 'keyboard') {
+        return;
+    }
+
+    const target = event.target;
+    if (target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable
+    )) {
+        return;
+    }
+
+    const isArrow = event.key.startsWith('Arrow');
+    const isClassHotkey = ['0', '1', '2', '3', '4'].includes(event.key);
+    if (!isArrow && !isClassHotkey) {
+        return;
+    }
+
+    event.preventDefault();
+
+    if (event.type === 'keydown' && isClassHotkey && !event.repeat) {
+        const classValue = event.key === '0' ? null : parseInt(event.key, 10) - 1;
+        socket.emit('set_class', { class_idx: classValue });
+        return;
+    }
+
+    if (!isArrow) {
+        return;
+    }
+
+    const alreadyPressed = activeKeyboardArrows.has(event.key);
+    if (event.type === 'keydown') {
+        if (alreadyPressed) {
+            return;
+        }
+        activeKeyboardArrows.add(event.key);
+        socket.emit('control_key', { key: event.key, pressed: true });
+        return;
+    }
+
+    if (!alreadyPressed) {
+        return;
+    }
+    activeKeyboardArrows.delete(event.key);
+    socket.emit('control_key', { key: event.key, pressed: false });
+}
+
+function releaseAllKeyboardArrows() {
+    if (!socket || controlMode !== 'keyboard' || activeKeyboardArrows.size === 0) {
+        return;
+    }
+
+    [...activeKeyboardArrows].forEach(key => {
+        socket.emit('control_key', { key, pressed: false });
+    });
+    activeKeyboardArrows.clear();
+}
+
 // ========================================
 // Plotting Functions
 // ========================================
 
 function updateManifoldPlot(data) {
     const points = data.points;
+    const labels = data.labels || [];
     const predictions = data.predictions;
     const centroids = data.centroids;
 
@@ -488,6 +877,9 @@ function updateManifoldPlot(data) {
     const windowSize = Math.min(data.centroid_window, points.length);
     const recentPoints = points.slice(-windowSize);
     const recentPreds = predictions.slice(-windowSize);
+    const recentLabels = labels.slice(-windowSize).map((label, index) =>
+        label === null || label === undefined ? recentPreds[index] : label
+    );
 
     // Separate points by class
     const traces = [];
@@ -498,7 +890,7 @@ function updateManifoldPlot(data) {
         const alphas = [];
 
         for (let i = 0; i < recentPoints.length; i++) {
-            if (recentPreds[i] === cls) {
+            if (recentLabels[i] === cls) {
                 classPoints.push(recentPoints[i]);
                 // Fade older points
                 alphas.push(0.3 + 0.7 * (i / recentPoints.length));
@@ -599,6 +991,9 @@ function updateManifoldPlot(data) {
 function updateProbabilitiesPlot(data) {
     const probs = data.probabilities;
     const predicted = data.predicted_class;
+    const target = data.prompt && data.prompt.target_class !== undefined && data.prompt.target_class !== null
+        ? data.prompt.target_class
+        : null;
 
     const colors = probs.map((_, i) =>
         i === predicted ? CLASS_COLORS[i] : CLASS_COLORS[i] + '80'
@@ -611,8 +1006,8 @@ function updateProbabilitiesPlot(data) {
         marker: {
             color: colors,
             line: {
-                color: probs.map((_, i) => i === predicted ? 'white' : 'transparent'),
-                width: probs.map((_, i) => i === predicted ? 2 : 0),
+                color: probs.map((_, i) => i === target ? 'white' : (i === predicted ? '#dbeafe' : 'transparent')),
+                width: probs.map((_, i) => i === target ? 3 : (i === predicted ? 1.5 : 0)),
             },
         },
         text: probs.map(p => `${(p * 100).toFixed(0)}%`),

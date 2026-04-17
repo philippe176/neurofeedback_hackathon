@@ -11,8 +11,8 @@ Controls
 """
 
 import sys
-import termios
-import tty
+#import termios
+#import tty
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -280,9 +280,11 @@ def run_emulator_gui(
 
     # Suppress terminal echo so arrow/number keys don't print garbage
     fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
+    root.mainloop()
+    '''old_settings = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
-        root.mainloop()
+        
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+'''

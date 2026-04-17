@@ -19,6 +19,9 @@ def test_emulator_bridge_initialization():
     assert bridge.sample_count == 0
     assert bridge.model_type == "dnn"
     assert bridge.viz_method == "neural"
+    assert bridge.control_mode == "buttons"
+    assert bridge.training_phase == "calibration"
+    assert bridge.pressed_arrows() == []
 
 
 def test_emulator_bridge_step_returns_valid_data():
@@ -44,6 +47,9 @@ def test_emulator_bridge_step_returns_valid_data():
     assert abs(sum(result["probabilities"]) - 1.0) < 0.01
     assert len(result["projection"]) == 2
     assert result["viz_method"] == "neural"
+    assert result["training_phase"] == "calibration"
+    assert result["prompt"]["guided"] is True
+    assert 0 <= result["prompt"]["target_class"] <= 3
 
 
 def test_emulator_bridge_set_class():
@@ -54,9 +60,45 @@ def test_emulator_bridge_set_class():
 
     for cls in [0, 1, 2, 3, None]:
         bridge.set_class(cls)
+        assert bridge.training_phase == "manual"
         assert bridge.current_class == cls
         result = bridge.step()
         assert result["current_class"] == cls
+        assert result["prompt"]["guided"] is False
+
+
+def test_emulator_bridge_keyboard_mode_applies_held_arrow_inputs():
+    """Test that keyboard emulator mode feeds strategy updates into the bridge."""
+    from webapp.emulator_bridge import EmulatorBridge
+
+    bridge = EmulatorBridge()
+    bridge.set_class(0)
+    bridge.set_control_mode("keyboard")
+
+    before = bridge.dynamics.z_strategy.copy()
+    bridge.set_arrow_pressed("ArrowRight", True)
+    result = bridge.step()
+
+    assert result["control_mode"] == "keyboard"
+    assert result["pressed_arrows"] == ["ArrowRight"]
+    assert bridge.dynamics.z_strategy[0] > before[0]
+
+
+def test_emulator_bridge_switching_control_modes_clears_held_keys():
+    """Test that leaving keyboard mode resets sticky arrow state."""
+    from webapp.emulator_bridge import EmulatorBridge
+
+    bridge = EmulatorBridge()
+    bridge.auto_tracking = True
+    bridge.set_control_mode("keyboard")
+    bridge.set_arrow_pressed("ArrowLeft", True)
+    assert bridge.auto_tracking is False
+    assert bridge.pressed_arrows() == ["ArrowLeft"]
+
+    bridge.set_control_mode("buttons")
+
+    assert bridge.control_mode == "buttons"
+    assert bridge.pressed_arrows() == []
 
 
 def test_emulator_bridge_auto_tracking():
@@ -182,10 +224,80 @@ def test_flask_app_creates_routes():
     assert "/api/status" in rules
     assert "/api/set_class" in rules
     assert "/api/toggle_tracking" in rules
+    assert "/api/set_training_phase" in rules
+    assert "/api/set_difficulty" in rules
+    assert "/api/set_control_mode" in rules
+    assert "/api/control_key" in rules
     assert "/api/set_centroid_window" in rules
     assert "/api/set_model" in rules
     assert "/api/set_viz_method" in rules
     assert "/api/save_model" in rules
+
+
+def test_set_control_mode_route_updates_status():
+    """Test that the Flask route switches the active input mode."""
+    import webapp.app as webapp_module
+
+    webapp_module.bridge = None
+    app = webapp_module.app
+
+    client = app.test_client()
+
+    response = client.post("/api/set_control_mode", json={"control_mode": "keyboard"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["control_mode"] == "keyboard"
+    assert payload["auto_tracking"] is False
+
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    status_payload = status.get_json()
+    assert status_payload["control_mode"] == "keyboard"
+    assert "keyboard" in status_payload["available_control_modes"]
+
+
+def test_set_training_phase_route_updates_status():
+    """Test that the Flask route switches the active training phase."""
+    import webapp.app as webapp_module
+
+    webapp_module.bridge = None
+    app = webapp_module.app
+
+    client = app.test_client()
+
+    response = client.post("/api/set_training_phase", json={"training_phase": "feedback"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["training_phase"] == "feedback"
+
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    status_payload = status.get_json()
+    assert status_payload["training_phase"] == "feedback"
+    assert "calibration" in status_payload["available_training_phases"]
+    assert "manual" in status_payload["available_training_phases"]
+
+
+def test_set_difficulty_route_updates_status():
+    """Test that the Flask route switches the active emulator difficulty."""
+    import webapp.app as webapp_module
+
+    webapp_module.bridge = None
+    app = webapp_module.app
+
+    client = app.test_client()
+
+    response = client.post("/api/set_difficulty", json={"difficulty": "d3"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["difficulty"] == "d3"
+    assert payload["sample_count"] == 0
+
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    status_payload = status.get_json()
+    assert status_payload["difficulty"] == "d3"
+    assert "d5" in status_payload["available_difficulties"]
 
 
 def test_set_model_route_updates_status():

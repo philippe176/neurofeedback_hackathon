@@ -4,11 +4,8 @@ Flask application with WebSocket support for real-time neurofeedback visualizati
 
 from __future__ import annotations
 
-import json
 import threading
 import time
-from dataclasses import asdict
-from typing import Any
 
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -43,20 +40,10 @@ def index():
 def status():
     """Get current system status."""
     b = get_bridge()
-    return jsonify({
-        "streaming": is_streaming,
-        "current_class": b.current_class,
-        "auto_tracking": b.auto_tracking,
-        "sample_count": b.sample_count,
-        "model_updates": b.trainer.num_updates if b.trainer else 0,
-        "difficulty": b.difficulty,
-        "model_type": b.model_type,
-        "model_name": b.model_name,
-        "available_models": b.available_models(),
-        "viz_method": b.viz_method,
-        "viz_name": b.viz_name,
-        "available_viz_methods": b.available_viz_methods(),
-    })
+    snapshot = b.status_snapshot()
+    snapshot["streaming"] = is_streaming
+    snapshot["model_updates"] = b.trainer.num_updates if b.trainer else 0
+    return jsonify(snapshot)
 
 
 @app.route("/api/set_class", methods=["POST"])
@@ -74,7 +61,93 @@ def toggle_tracking():
     """Toggle auto-tracking mode."""
     b = get_bridge()
     b.auto_tracking = not b.auto_tracking
-    return jsonify({"success": True, "auto_tracking": b.auto_tracking})
+    if b.auto_tracking:
+        b.set_control_mode("buttons")
+    return jsonify({
+        "success": True,
+        "auto_tracking": b.auto_tracking,
+        "control_mode": b.control_mode,
+        "pressed_arrows": b.pressed_arrows(),
+    })
+
+
+@app.route("/api/set_training_phase", methods=["POST"])
+def set_training_phase():
+    """Switch between calibration, neurofeedback, and manual sandbox phases."""
+    data = request.get_json() or {}
+    training_phase = data.get("training_phase", "calibration")
+    b = get_bridge()
+    try:
+        b.set_training_phase(training_phase)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({
+        "success": True,
+        "training_phase": b.training_phase,
+        "training_phase_name": b.training_phase_name,
+        "training_phase_description": b.status_snapshot()["training_phase_description"],
+        "prompt": b.preview_prompt_state(),
+        "session": b.session_snapshot(),
+        "calibration": b.calibration_snapshot(),
+        "coach": b.coach_snapshot(),
+    })
+
+
+@app.route("/api/set_difficulty", methods=["POST"])
+def set_difficulty():
+    """Select which disturbance pattern the embedded emulator should use."""
+    data = request.get_json() or {}
+    difficulty = data.get("difficulty", "d1")
+    b = get_bridge()
+    try:
+        b.set_difficulty(difficulty)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({
+        "success": True,
+        "difficulty": b.difficulty,
+        "difficulty_name": b.difficulty_name,
+        "sample_count": b.sample_count,
+        "calibration": b.calibration_snapshot(),
+        "coach": b.coach_snapshot(),
+    })
+
+
+@app.route("/api/set_control_mode", methods=["POST"])
+def set_control_mode():
+    """Select the web input mode used to drive the emulator."""
+    data = request.get_json() or {}
+    control_mode = data.get("control_mode", "buttons")
+    b = get_bridge()
+    try:
+        b.set_control_mode(control_mode)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({
+        "success": True,
+        "control_mode": b.control_mode,
+        "control_mode_name": b.available_control_modes()[b.control_mode],
+        "auto_tracking": b.auto_tracking,
+        "pressed_arrows": b.pressed_arrows(),
+    })
+
+
+@app.route("/api/control_key", methods=["POST"])
+def control_key():
+    """Track held emulator arrow keys coming from the browser."""
+    data = request.get_json() or {}
+    key = data.get("key")
+    pressed = bool(data.get("pressed"))
+    b = get_bridge()
+    try:
+        b.set_arrow_pressed(key, pressed)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({
+        "success": True,
+        "pressed_arrows": b.pressed_arrows(),
+        "auto_tracking": b.auto_tracking,
+    })
 
 
 @app.route("/api/set_centroid_window", methods=["POST"])
@@ -196,7 +269,109 @@ def handle_toggle_tracking():
     """Handle tracking toggle from client."""
     b = get_bridge()
     b.auto_tracking = not b.auto_tracking
-    emit("tracking_changed", {"auto_tracking": b.auto_tracking})
+    if b.auto_tracking:
+        b.set_control_mode("buttons")
+    emit(
+        "tracking_changed",
+        {
+            "auto_tracking": b.auto_tracking,
+            "control_mode": b.control_mode,
+            "pressed_arrows": b.pressed_arrows(),
+        },
+        broadcast=True,
+    )
+
+
+@socketio.on("set_training_phase")
+def handle_set_training_phase(data):
+    """Handle guided pipeline phase changes from the client."""
+    training_phase = (data or {}).get("training_phase", "calibration")
+    b = get_bridge()
+    try:
+        b.set_training_phase(training_phase)
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+    emit(
+        "training_phase_changed",
+        {
+            "training_phase": b.training_phase,
+            "training_phase_name": b.training_phase_name,
+            "training_phase_description": b.status_snapshot()["training_phase_description"],
+            "prompt": b.preview_prompt_state(),
+            "session": b.session_snapshot(),
+            "calibration": b.calibration_snapshot(),
+            "coach": b.coach_snapshot(),
+        },
+        broadcast=True,
+    )
+
+
+@socketio.on("set_difficulty")
+def handle_set_difficulty(data):
+    """Handle emulator difficulty changes from the client."""
+    difficulty = (data or {}).get("difficulty", "d1")
+    b = get_bridge()
+    try:
+        b.set_difficulty(difficulty)
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+    emit(
+        "difficulty_changed",
+        {
+            "difficulty": b.difficulty,
+            "difficulty_name": b.difficulty_name,
+            "sample_count": b.sample_count,
+            "calibration": b.calibration_snapshot(),
+            "coach": b.coach_snapshot(),
+        },
+        broadcast=True,
+    )
+
+
+@socketio.on("set_control_mode")
+def handle_set_control_mode(data):
+    """Handle control mode selection from client."""
+    control_mode = (data or {}).get("control_mode", "buttons")
+    b = get_bridge()
+    try:
+        b.set_control_mode(control_mode)
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+    emit(
+        "control_mode_changed",
+        {
+            "control_mode": b.control_mode,
+            "control_mode_name": b.available_control_modes()[b.control_mode],
+            "auto_tracking": b.auto_tracking,
+            "pressed_arrows": b.pressed_arrows(),
+        },
+        broadcast=True,
+    )
+
+
+@socketio.on("control_key")
+def handle_control_key(data):
+    """Handle held arrow-key state from the browser."""
+    payload = data or {}
+    key = payload.get("key")
+    pressed = bool(payload.get("pressed"))
+    b = get_bridge()
+    try:
+        b.set_arrow_pressed(key, pressed)
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+    emit(
+        "control_state_changed",
+        {
+            "pressed_arrows": b.pressed_arrows(),
+            "auto_tracking": b.auto_tracking,
+        },
+        broadcast=True,
+    )
 
 
 @socketio.on("set_centroid_window")
