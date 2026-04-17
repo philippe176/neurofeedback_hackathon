@@ -17,7 +17,7 @@ Each message looks like:
     "label_name":  "left_hand",          # human-readable
     "n_dims":      256,
     "sample_rate": 10,
-    "difficulty":  "medium"
+    "difficulty":  "d1"
 }
 """
 

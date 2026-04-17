@@ -5,7 +5,6 @@ scikit-learn>=1.4
 
 # Emulator (ZMQ-based streaming)
 pyzmq>=25.0
-<<<<<<< HEAD
 
 # Visualization
 matplotlib>=3.8
@@ -16,6 +15,3 @@ flask-socketio>=5.3
 
 # Testing
 pytest>=8.0
-=======
-matplotlib
->>>>>>> Decode

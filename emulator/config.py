@@ -7,11 +7,15 @@ Difficulty is controlled primarily by spring_rate: a stronger spring decays fast
 requiring more sustained effort to hold the optimal position.
 
 At equilibrium (holding one arrow axis continuously):
-    arrow_speed = spring_rate * z_eq  →  z_eq = strategy_speed / (spring_rate * dt)
+    z_{t+1} = (z_t + strategy_speed) * exp(-spring_rate * dt)
+    z_eq = strategy_speed * exp(-spring_rate * dt) / (1 - exp(-spring_rate * dt))
 
-With strategy_speed=0.09 and dt=0.1:
-    d1 (spring=1.2): diagonal equilibrium ≈ 0.75   (near corner — easy to hold)
-    d5 (spring=2.8): diagonal equilibrium ≈ 0.32   (far from corner — needs effort)
+With dt=0.1 and configured levels:
+    d1 (spring=0.8, speed=0.09):  diagonal equilibrium ≈ 0.95
+    d3 (spring=1.5, speed=0.09):  diagonal equilibrium ≈ 0.56
+    d5 (spring=2.0, speed=0.112): diagonal equilibrium ≈ 0.51
+
+This keeps d4/d5 difficult but still allows reaching class-specific optimal corners (±0.5, ±0.5).
 """
 
 from dataclasses import dataclass
@@ -81,7 +85,7 @@ DIFFICULTIES: dict[str, DifficultyConfig] = {
         gaussian_noise_std=0.85,
         latent_noise_std=0.10,
         class_pull_strength=0.22,
-        strategy_speed=0.09,
+        strategy_speed=0.10,
         strategy_sensitivity=2.5,
     ),
     "d5": DifficultyConfig(
@@ -90,7 +94,7 @@ DIFFICULTIES: dict[str, DifficultyConfig] = {
         gaussian_noise_std=1.10,
         latent_noise_std=0.12,
         class_pull_strength=0.20,
-        strategy_speed=0.09,
+        strategy_speed=0.112,
         strategy_sensitivity=2.8,
     ),
 }

@@ -165,6 +165,7 @@ class EmulatorBridge:
         self.last_source_sample_idx: int | None = None
         self.last_sample_wall_time: float | None = None
         self.last_stream_timestamp: float | None = None
+        self.stream_sample_rate_hz: float | None = None
 
         self._neural_points: deque[np.ndarray] = deque(maxlen=history_len)
         self._penultimate: deque[np.ndarray] = deque(maxlen=history_len)
@@ -443,6 +444,7 @@ class EmulatorBridge:
         return {
             "host": self.stream_host,
             "port": self.stream_port,
+            "sample_rate_hz": self.stream_sample_rate_hz,
             "listening": self.receiver_started,
             "connected": self.last_sample_wall_time is not None,
             "waiting_for_stream": waiting_for_stream,
@@ -660,6 +662,14 @@ class EmulatorBridge:
         self.last_source_sample_idx = int(sample.sample_idx)
         self.last_sample_wall_time = time.time()
         self.last_stream_timestamp = float(sample.timestamp)
+        sample_rate = sample.raw.get("sample_rate") if isinstance(sample.raw, dict) else None
+        if sample_rate is not None:
+            try:
+                rate = float(sample_rate)
+                if rate > 0.0:
+                    self.stream_sample_rate_hz = rate
+            except (TypeError, ValueError):
+                pass
         if sample.difficulty:
             self.difficulty = str(sample.difficulty)
 

@@ -1,6 +1,5 @@
-<<<<<<< HEAD
 # Byte-compiled / optimized / DLL files
-__pycache__
+__pycache__/
 *.py[cod]
 *$py.class
 
@@ -34,7 +33,7 @@ htmlcov/
 .tox/
 .coverage
 .coverage.*
-.cache
+.cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -42,10 +41,13 @@ coverage.xml
 .pytest_cache/
 
 # Virtual environments
+.env
+.venv/
 venv/
 env/
 ENV/
-.venv
+env.bak/
+venv.bak/
 
 # IDEs
 .vscode/
@@ -59,30 +61,11 @@ ENV/
 Thumbs.db
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
 
 # pyenv
 .python-version
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Test cache
-pytest-cache*
-
-# Saved models
+# Saved models / test artifacts
 saved_models/
 test_artifacts/
-=======
-venv/
-__pycache__/
-.env
-.DS_Store
-.vscode/
->>>>>>> Decode
