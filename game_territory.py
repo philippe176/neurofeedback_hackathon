@@ -295,6 +295,11 @@ class TerritoryState:
             return
 
         # Label gate: wrong class resets dwell; None is neutral (no advance, no reset)
+        if label == "BLOCK":
+            self._dwell.clear()
+            self._good_since = None
+            return
+
         if isinstance(label, int) and label != self.cls:
             self._dwell.clear()
             self._good_since = None
@@ -509,7 +514,8 @@ class TerritoryGame:
         for cls, terr in self._territories.items():
             cen = self._centroids.get(cls)
             if cen is not None:
-                terr.on_sample(smooth, cen, now, self._active_label)
+                    cue_for_capture = self._active_label if self._auto_mode else "BLOCK"
+                    terr.on_sample(smooth, cen, now, cue_for_capture)
 
         self._explore.on_sample(smooth, valid_centroids, now)
 
