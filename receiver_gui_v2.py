@@ -1,18 +1,23 @@
 """
-Starter visualization GUI for the Brain Emulator.
+Starter visualization GUI for the Brain Emulator (Master Controller).
 
-Connects to the emulator via ZMQ and shows:
+Connects to the emulator via ZMQ (port 5555) and shows:
   Left panel  — 2D projection of brain state over time.
-                Points fade out with age so you can follow the trajectory.
-                Projection axes are recomputed every few seconds and
-                sign-aligned with the previous axes so the plot stays stable.
   Right panel — Raw signal (first 8 channels) scrolling over time.
 
-Run the emulator first:
-    python -m emulator -d easy
+Master Controller Logic:
+  During Phase 2, this script acts as the master, calculating the distance 
+  from the patient's live brain state to the frozen centroids, converting 
+  that to probabilities, and broadcasting it over ZMQ (port 5556) to the game.
 
-Then in a separate terminal:
-    python receiver_gui.py
+Run the emulator first:
+    python -m emulator_v1 -d easy
+
+Run this GUI:
+    python receiver_gui_v2.py
+
+Run the patient game:
+    python run_maze.py
 """
 
 import json
@@ -33,6 +38,7 @@ import zmq
 
 HOST              = "localhost"
 PORT              = 5555
+GAME_PORT         = 5556    # The port the maze game will listen to
 
 HISTORY_LEN         = 300   # samples kept for display (30 s at 10 Hz)
 PER_CLASS_FIT_BUF   = 40    # last N samples kept PER CLASS for fitting
@@ -45,6 +51,8 @@ REPROJECT_EVERY     = 10    # recompute projection every N new samples (~1 s)
 UPDATE_MS           = 150   # plot refresh interval in ms
 MIN_PER_CLASS       = 8     # need at least this many samples per class before LDA
 
+TEMPERATURE         = 0.5   # Controls how strict the confidence drop-off is in Phase 2
+
 CLASS_COLORS = {
     0:    "#6495ed",   # cornflower blue  — left_hand
     1:    "#ffa500",   # orange           — right_hand
@@ -55,18 +63,16 @@ CLASS_COLORS = {
 CLASS_NAMES = {0: "left_hand", 1: "right_hand", 2: "left_leg", 3: "right_leg", None: "rest"}
 
 # ---------------------------------------------------------------------------
-# ZMQ receiver thread
+# ZMQ setup
 # ---------------------------------------------------------------------------
 
 # Display history — all samples, used for the faded scatter trail
 _buffer  : collections.deque = collections.deque(maxlen=HISTORY_LEN)
 # Per-class fit buffer — last PER_CLASS_FIT_BUF samples per labeled class
-# Used to fit the projection so all 4 classes are always represented
 _fit_buf : dict[int, collections.deque] = {
     c: collections.deque(maxlen=PER_CLASS_FIT_BUF) for c in range(4)
 }
 # Per-class centroid buffer — last CENTROID_HISTORY_LEN samples per class
-# Used only for drawing class center markers in projected 2D space
 _centroid_buf : dict[int, collections.deque] = {
     c: collections.deque(maxlen=CENTROID_HISTORY_MAX) for c in range(4)
 }
@@ -81,6 +87,10 @@ _phase2_frozen_centroids: dict[int, np.ndarray] | None = None
 _phase2_frozen_proj = None
 _phase2_pending_freeze = False
 
+# Game Publisher setup
+_ctx_pub = zmq.Context()
+_sock_pub = _ctx_pub.socket(zmq.PUB)
+_sock_pub.bind(f"tcp://*:{GAME_PORT}")
 
 def _receiver_thread():
     ctx    = zmq.Context()
@@ -89,6 +99,8 @@ def _receiver_thread():
     sock.setsockopt_string(zmq.SUBSCRIBE, "")
     sock.setsockopt(zmq.RCVTIMEO, 500)
     print(f"Receiver connected to tcp://{HOST}:{PORT}")
+    print(f"Game Publisher bound to tcp://*:{GAME_PORT}")
+    
     while _running:
         try:
             msg = json.loads(sock.recv_string())
@@ -110,40 +122,20 @@ def _receiver_thread():
             pass
     sock.close(); ctx.term()
 
-
 threading.Thread(target=_receiver_thread, daemon=True).start()
 
 # ---------------------------------------------------------------------------
-# Stable PCA projection
+# Stable PCA/LDA projection
 # ---------------------------------------------------------------------------
 
 class LDAProjection:
-    """
-    Fits a 2-component LDA projection using the per-class fit buffers.
-
-    LDA uses class labels to find the directions that maximally separate
-    classes — unlike PCA which finds directions of maximum total variance
-    and ignores labels entirely.
-
-    The fit buffer keeps the last PER_CLASS_FIT_BUF samples per class, so
-    all 4 classes are always represented regardless of what the player has
-    been pressing recently.
-
-    Falls back to PCA when fewer than MIN_PER_CLASS samples exist per class.
-    Signs are aligned with previous axes on each refit to prevent flipping.
-    """
     def __init__(self):
-        self.components: np.ndarray | None = None   # shape (2, n_dims)
+        self.components: np.ndarray | None = None   
         self._mean:      np.ndarray | None = None
         self._since_update = 0
         self.method = "waiting"
 
     def update(self, fit_buf: dict, X_all: np.ndarray) -> np.ndarray:
-        """
-        fit_buf: {class_idx: deque of entries} — per-class sample buffers
-        X_all:   (N, n_dims) — all history for display
-        Returns  (N, 2) projected coordinates
-        """
         self._since_update += 1
         if len(X_all) == 0:
             return np.zeros((0, 2))
@@ -153,7 +145,6 @@ class LDAProjection:
             self._since_update = 0
 
         if self.components is None:
-            # Not enough labeled data yet — fall back to PCA on whatever we have
             self.method = "PCA (warmup)"
             mean = X_all.mean(axis=0)
             try:
@@ -165,7 +156,6 @@ class LDAProjection:
         return (X_all - self._mean) @ self.components.T
 
     def _refit(self, fit_buf: dict):
-        # Collect fit data per class
         Xs, ys = [], []
         for cls, buf in fit_buf.items():
             if len(buf) >= MIN_PER_CLASS:
@@ -175,7 +165,7 @@ class LDAProjection:
 
         if len(Xs) < 2:
             self.method = "waiting"
-            return   # not enough classes yet
+            return
 
         X  = np.vstack(Xs)
         y  = np.array(ys)
@@ -186,7 +176,6 @@ class LDAProjection:
             new_comp = self._lda_components(Xc, y)
             self.method = "LDA"
         except Exception:
-            # LDA can fail (singular matrices); fall back to PCA
             _, _, Vt   = np.linalg.svd(Xc, full_matrices=False)
             new_comp   = Vt[:2]
             self.method = "PCA"
@@ -201,19 +190,16 @@ class LDAProjection:
 
     @staticmethod
     def _lda_components(Xc: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Return top-2 LDA directions (Fisher's linear discriminant)."""
         classes  = np.unique(y)
         n_total  = len(Xc)
         n_dims   = Xc.shape[1]
 
-        # Within-class scatter S_W
         S_W = np.zeros((n_dims, n_dims))
         for c in classes:
             Xc_c = Xc[y == c]
             diff = Xc_c - Xc_c.mean(axis=0)
             S_W += diff.T @ diff
 
-        # Between-class scatter S_B
         grand_mean = Xc.mean(axis=0)
         S_B = np.zeros((n_dims, n_dims))
         for c in classes:
@@ -222,37 +208,27 @@ class LDAProjection:
             diff = (mu_c - grand_mean).reshape(-1, 1)
             S_B += n_c * (diff @ diff.T)
 
-        # Solve generalised eigenproblem via PCA whitening trick
-        # (avoids inverting the full n_dims × n_dims S_W matrix)
-        # 1. PCA-whiten to reduce to manageable size
         _, s, Vt     = np.linalg.svd(Xc, full_matrices=False)
         keep         = min(len(classes) * 4, len(s), n_total - 1)
         Vt_r         = Vt[:keep]
         s_r          = s[:keep]
-        W            = Vt_r.T / (s_r + 1e-8)     # whitening matrix
+        W            = Vt_r.T / (s_r + 1e-8)
 
         S_W_w = W.T @ S_W @ W
         S_B_w = W.T @ S_B @ W
 
-        # Eigenvectors of S_W_w^{-1} S_B_w
-        S_W_w += np.eye(keep) * 1e-6             # regularise
+        S_W_w += np.eye(keep) * 1e-6
         evals, evecs = np.linalg.eig(np.linalg.solve(S_W_w, S_B_w))
         evals        = evals.real
         evecs        = evecs.real
         idx          = np.argsort(evals)[::-1]
-        top2         = evecs[:, idx[:2]].T        # (2, keep)
+        top2         = evecs[:, idx[:2]].T
 
-        # Map back to original space
-        components   = top2 @ W.T                 # (2, n_dims)
+        components   = top2 @ W.T
         norms        = np.linalg.norm(components, axis=1, keepdims=True)
         return components / (norms + 1e-12)
 
-
 _proj = LDAProjection()
-
-# ---------------------------------------------------------------------------
-# Fisher separability score
-# ---------------------------------------------------------------------------
 
 def fisher_score(X2: np.ndarray, labels: np.ndarray) -> float:
     classes = [c for c in np.unique(labels) if c >= 0]
@@ -278,7 +254,7 @@ for ax in (ax_proj, ax_raw):
     for sp in ax.spines.values():
         sp.set_edgecolor("#333355")
 
-ax_proj.set_title("PCA projection", color="#aaa", fontsize=11)
+ax_proj.set_title("PCA/LDA projection", color="#aaa", fontsize=11)
 ax_proj.set_xlabel("PC 1", color="#777", fontsize=9)
 ax_proj.set_ylabel("PC 2", color="#777", fontsize=9)
 
@@ -305,7 +281,7 @@ ax_proj.legend(handles=legend_handles, loc="upper right",
 fig.tight_layout(pad=2.5, rect=[0, 0.15, 1, 1])
 
 # ---------------------------------------------------------------------------
-# PCA / LDA toggle button
+# UI Elements
 # ---------------------------------------------------------------------------
 
 ax_btn = fig.add_axes([0.44, 0.01, 0.12, 0.055])
@@ -320,16 +296,13 @@ def _on_btn_click(_event):
     if _proj_mode == "lda":
         _proj_mode = "pca"
         _btn_toggle.label.set_text("Mode: PCA")
-        print("Projection: PCA")
     else:
         _proj_mode = "lda"
         _btn_toggle.label.set_text("Mode: LDA")
-        print("Projection: LDA")
     fig.canvas.draw_idle()
 
 _btn_toggle.on_clicked(_on_btn_click)
 
-# Show last-points overlay toggle button
 ax_btn_hist = fig.add_axes([0.57, 0.01, 0.15, 0.055])
 ax_btn_hist.set_facecolor("#1e1e2e")
 _btn_hist = Button(ax_btn_hist, "LastPts: OFF", color="#1e1e2e", hovercolor="#2e2e4e")
@@ -345,7 +318,6 @@ def _on_hist_btn_click(_event):
 
 _btn_hist.on_clicked(_on_hist_btn_click)
 
-# Phase 2 toggle button
 ax_btn_phase2 = fig.add_axes([0.73, 0.01, 0.16, 0.055])
 ax_btn_phase2.set_facecolor("#1e1e2e")
 _btn_phase2 = Button(ax_btn_phase2, "Phase 2: OFF", color="#1e1e2e", hovercolor="#2e2e4e")
@@ -370,7 +342,6 @@ def _on_phase2_btn_click(_event):
 
 _btn_phase2.on_clicked(_on_phase2_btn_click)
 
-# Slider: live control of centroid history length (forgetting)
 ax_hist_slider = fig.add_axes([0.15, 0.075, 0.70, 0.03])
 ax_hist_slider.set_facecolor("#1e1e2e")
 _slider_cent_hist = Slider(
@@ -391,25 +362,18 @@ def _on_cent_hist_change(val):
 
 _slider_cent_hist.on_changed(_on_cent_hist_change)
 
-# ---------------------------------------------------------------------------
-# Key handler — L = LDA, P = PCA
-# ---------------------------------------------------------------------------
-
 def _on_key(event):
     global _proj_mode, _show_last_hist
     global _phase2_active, _phase2_frozen_centroids, _phase2_frozen_proj, _phase2_pending_freeze
     if event.key in ("l", "L"):
         _proj_mode = "lda"
         _btn_toggle.label.set_text("Mode: LDA")
-        print("Projection: LDA")
     elif event.key in ("p", "P"):
         _proj_mode = "pca"
         _btn_toggle.label.set_text("Mode: PCA")
-        print("Projection: PCA")
     elif event.key in ("h", "H"):
         _show_last_hist = not _show_last_hist
         _btn_hist.label.set_text(f"LastPts: {'ON' if _show_last_hist else 'OFF'}")
-        print(f"Last points overlay: {'ON' if _show_last_hist else 'OFF'}")
     elif event.key == "2":
         _phase2_active = not _phase2_active
         if _phase2_active:
@@ -426,7 +390,7 @@ def _on_key(event):
 fig.canvas.mpl_connect("key_press_event", _on_key)
 
 # ---------------------------------------------------------------------------
-# Animation
+# Animation & Master Controller Broadcast
 # ---------------------------------------------------------------------------
 
 _raw_palette = plt.cm.plasma(np.linspace(0.2, 0.9, 8))
@@ -437,7 +401,6 @@ def update(_frame):
     except Exception:
         import traceback
         traceback.print_exc()
-
 
 def _update_inner():
     global _phase2_pending_freeze, _phase2_frozen_centroids, _phase2_frozen_proj
@@ -454,8 +417,6 @@ def _update_inner():
     idxs   = np.array([s["idx"]   for s in snapshot])
     N      = len(snapshot)
 
-    # Project: LDA mode uses per-class fit buffers; PCA mode uses recent history.
-    # Keep the active projection transform so centroid buffers can use the exact same 2D space.
     centroid_project = None
     if _phase2_active and _phase2_frozen_proj is not None:
         coords = _phase2_frozen_proj(data)
@@ -467,7 +428,6 @@ def _update_inner():
             mean = _proj._mean.copy()
             centroid_project = lambda X, c=comp, m=mean: (X - m) @ c.T
     else:
-        # Plain PCA — recompute on the most recent 100 samples
         n_fit  = min(100, N)
         mean   = data[-n_fit:].mean(axis=0)
         _, _, Vt = np.linalg.svd(data[-n_fit:] - mean, full_matrices=False)
@@ -477,19 +437,13 @@ def _update_inner():
         pm = mean.copy()
         centroid_project = lambda X, p=pc, m=pm: (X - m) @ p.T
 
-    # ----------------------------------------------------------------
-    # Left: stable PCA scatter with fade trail
-    # ----------------------------------------------------------------
-
     ax_proj.cla()
     ax_proj.set_facecolor("#141422")
     for sp in ax_proj.spines.values():
         sp.set_edgecolor("#333355")
 
-    # Age-based alpha: newest sample = 1.0, oldest = 0.05
     ages   = np.linspace(0.05, 1.0, N)
 
-    # Draw points per class, alpha encodes age
     for cls_key, color in CLASS_COLORS.items():
         if cls_key is None:
             mask = labels == -1
@@ -506,20 +460,17 @@ def _update_inner():
         ax_proj.scatter(coords[mask, 0], coords[mask, 1],
                         c=rgba, s=size, linewidths=0, zorder=zorder)
 
-    # Bright trajectory line for the most recent TRAIL_LEN points
     if N >= 2:
         trail_n = min(TRAIL_LEN, N)
         tx, ty  = coords[-trail_n:, 0], coords[-trail_n:, 1]
         ax_proj.plot(tx, ty, color="#ffffff", linewidth=0.8, alpha=0.35, zorder=3)
 
-    # Current point: large white dot
     current_label = snapshot[-1]["label"]
     current_color = CLASS_COLORS[current_label] if current_label in CLASS_COLORS else CLASS_COLORS[None]
     dot_color = current_color if _phase2_active else "white"
     ax_proj.scatter(coords[-1, 0], coords[-1, 1],
                     c=dot_color, s=70, zorder=8 if _phase2_active else 5, linewidths=0)
 
-    # Optional overlay: all labeled history points currently in the display buffer.
     if _show_last_hist:
         for cls in range(4):
             cls_idx = np.where(labels == cls)[0]
@@ -531,7 +482,6 @@ def _update_inner():
             )
 
     live_centroids: dict[int, np.ndarray] = {}
-    # Large centroid circles: mean projected location per class over recent history.
     for cls in range(4):
         cbuf = centroid_buf_snap.get(cls, [])
         if len(cbuf) == 0:
@@ -541,7 +491,6 @@ def _update_inner():
         if centroid_project is not None:
             ccoords = centroid_project(Xc)
         else:
-            # Warmup fallback: use current display points for this class.
             mask = labels == cls
             if not mask.any():
                 continue
@@ -565,7 +514,6 @@ def _update_inner():
                             c=CLASS_COLORS[cls], s=220, edgecolors="white",
                             linewidths=2, zorder=6)
 
-    # Phase 2 representative points: average last PHASE2_AVG_N same-class samples.
     if _phase2_active and _phase2_frozen_proj is not None:
         for cls in range(4):
             cls_idx = np.where(labels == cls)[0]
@@ -578,7 +526,33 @@ def _update_inner():
                             c=CLASS_COLORS[cls], s=120, marker="o",
                             edgecolors="black", linewidths=1.5, zorder=7)
 
-    # Separability score on recent labeled samples (reflects current strategy quality)
+    # ----------------------------------------------------------------
+    # MASTER CONTROLLER: Phase 2 Distance-to-Probability Broadcast
+    # ----------------------------------------------------------------
+    if _phase2_active and _phase2_frozen_centroids is not None:
+        current_pt = coords[-1]
+        distances = np.zeros(4)
+        
+        for c in range(4):
+            if c in _phase2_frozen_centroids:
+                distances[c] = np.linalg.norm(current_pt - _phase2_frozen_centroids[c])
+            else:
+                distances[c] = 999.0  # Heavy penalty for uncalibrated classes
+                
+        # Convert distances to logits (closer = higher score)
+        logits = -distances / TEMPERATURE
+        
+        # Softmax to get probabilities that sum to 1.0
+        probs = np.exp(logits) / np.sum(np.exp(logits))
+        
+        # Broadcast immediately to the maze game via ZMQ
+        try:
+            _sock_pub.send_string(json.dumps({"probs": probs.tolist()}))
+        except Exception as e:
+            pass
+
+    # ----------------------------------------------------------------
+
     n_score      = min(100, N)
     score_labels = labels[-n_score:]
     score_coords = coords[-n_score:]
@@ -590,7 +564,7 @@ def _update_inner():
     scale = _meta.get("class_scale", None)
     scale_str = f"   signal={scale:.2f}" if scale is not None else ""
     overlay_str = "   lastPts=ON" if _show_last_hist else ""
-    phase2_str = "   [Phase 2]" if _phase2_active else ""
+    phase2_str = "   [Phase 2 ACTIVE]" if _phase2_active else ""
     ax_proj.set_title(
         f"{_proj.method}   sep={score:.2f}{scale_str}   cent_hist={_centroid_hist_len}{overlay_str}{phase2_str}   [{diff}]",
         color="#aaa", fontsize=10,
@@ -601,9 +575,6 @@ def _update_inner():
     ax_proj.legend(handles=legend_handles, loc="upper right",
                    facecolor="#1e1e2e", edgecolor="#444", labelcolor="#ccc", fontsize=8)
 
-    # ----------------------------------------------------------------
-    # Right: raw signal scrolling
-    # ----------------------------------------------------------------
     ax_raw.cla()
     ax_raw.set_facecolor("#141422")
     for sp in ax_raw.spines.values():
@@ -614,7 +585,6 @@ def _update_inner():
     ridxs  = idxs[-n_raw:]
     rlabels = labels[-n_raw:]
 
-    # Background shading by label
     for i in range(len(ridxs) - 1):
         lbl = rlabels[i]
         if lbl >= 0:
