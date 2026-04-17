@@ -33,6 +33,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--heartbeat-every", type=int, default=20)
     parser.add_argument("--no-viz", action="store_true")
+    parser.add_argument("--viz-method", type=str, default="neural", choices=["neural", "pca", "lda", "tsne", "umap"])
+    parser.add_argument("--viz-fit-window", type=int, default=300)
+    parser.add_argument("--viz-refit-every", type=int, default=10)
+    parser.add_argument("--viz-use-projection-head", action="store_true")
+    parser.add_argument("--viz-tsne-perplexity", type=float, default=20.0)
 
     parser.add_argument("--game-mode", action="store_true")
     parser.add_argument("--game-seed", type=int, default=7)
@@ -69,6 +74,11 @@ def main() -> None:
         warmup_labeled_samples=args.warmup_labeled,
         heartbeat_every=args.heartbeat_every,
         viz_enabled=not args.no_viz,
+        viz_method=args.viz_method,
+        viz_fit_window=args.viz_fit_window,
+        viz_refit_every=args.viz_refit_every,
+        viz_use_penultimate=not args.viz_use_projection_head,
+        viz_tsne_perplexity=args.viz_tsne_perplexity,
         device=args.device,
     )
 
@@ -180,6 +190,11 @@ def main() -> None:
             history_len=cfg.viz_history,
             ema_alpha=cfg.viz_ema_alpha,
             draw_every=cfg.viz_draw_every,
+            viz_method=cfg.viz_method,
+            fit_window=cfg.viz_fit_window,
+            refit_every=cfg.viz_refit_every,
+            use_penultimate=cfg.viz_use_penultimate,
+            tsne_perplexity=cfg.viz_tsne_perplexity,
         )
 
     print(

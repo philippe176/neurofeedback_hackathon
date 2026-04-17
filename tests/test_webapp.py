@@ -1,5 +1,7 @@
 """Tests for the webapp module."""
 
+from pathlib import Path
+
 import pytest
 import numpy as np
 
@@ -15,6 +17,8 @@ def test_emulator_bridge_initialization():
     assert bridge.current_class is None
     assert bridge.auto_tracking is False
     assert bridge.sample_count == 0
+    assert bridge.model_type == "dnn"
+    assert bridge.viz_method == "neural"
 
 
 def test_emulator_bridge_step_returns_valid_data():
@@ -39,6 +43,7 @@ def test_emulator_bridge_step_returns_valid_data():
     assert len(result["probabilities"]) == 4
     assert abs(sum(result["probabilities"]) - 1.0) < 0.01
     assert len(result["projection"]) == 2
+    assert result["viz_method"] == "neural"
 
 
 def test_emulator_bridge_set_class():
@@ -104,6 +109,69 @@ def test_emulator_bridge_learning_improves():
     assert result["training"]["labeled_seen"] > 0
 
 
+def test_emulator_bridge_can_switch_visualization_modes():
+    """Test that the bridge supports alternate visualization backends."""
+    from webapp.emulator_bridge import EmulatorBridge
+
+    bridge = EmulatorBridge(viz_method="pca")
+    bridge.auto_tracking = True
+
+    for _ in range(12):
+        result = bridge.step()
+
+    assert bridge.viz_method == "pca"
+    assert result["viz_method"] == "pca"
+    assert result["viz_name"] == "PCA Projection"
+    assert len(result["projection"]) == 2
+    assert len(result["probabilities"]) == 4
+    assert len(result["points"]) == bridge.sample_count
+
+
+def test_emulator_bridge_supports_deep_learning_decoder_variants():
+    """Test that the bridge can swap between DNN, CNN, and CEBRA-style decoders."""
+    from webapp.emulator_bridge import EmulatorBridge
+
+    for model_type in ("dnn", "cnn", "cebra"):
+        bridge = EmulatorBridge(model_type=model_type)
+        bridge.auto_tracking = True
+        result = bridge.step()
+
+        assert result["model_type"] == model_type
+        assert len(result["probabilities"]) == 4
+        assert len(result["projection"]) == 2
+
+
+def test_emulator_bridge_switching_model_resets_visual_history():
+    """Test that changing models clears stale visualization history."""
+    from webapp.emulator_bridge import EmulatorBridge
+
+    bridge = EmulatorBridge()
+    for _ in range(5):
+        bridge.step()
+
+    assert len(bridge._points) > 0
+    bridge.set_model("cnn")
+
+    assert len(bridge._points) == 0
+    assert bridge.model_type == "cnn"
+
+
+def test_emulator_bridge_switching_viz_method_reprojects_history():
+    """Test that visualization method changes keep the history available."""
+    from webapp.emulator_bridge import EmulatorBridge
+
+    bridge = EmulatorBridge()
+    bridge.auto_tracking = True
+    for _ in range(12):
+        bridge.step()
+
+    before = len(bridge._points)
+    bridge.set_viz_method("lda")
+
+    assert bridge.viz_method == "lda"
+    assert len(bridge._points) == before
+
+
 def test_flask_app_creates_routes():
     """Test that Flask app has expected routes."""
     from webapp.app import app
@@ -115,3 +183,100 @@ def test_flask_app_creates_routes():
     assert "/api/set_class" in rules
     assert "/api/toggle_tracking" in rules
     assert "/api/set_centroid_window" in rules
+    assert "/api/set_model" in rules
+    assert "/api/set_viz_method" in rules
+    assert "/api/save_model" in rules
+
+
+def test_set_model_route_updates_status():
+    """Test that the Flask route switches the active model."""
+    import webapp.app as webapp_module
+
+    webapp_module.bridge = None
+    app = webapp_module.app
+
+    client = app.test_client()
+
+    response = client.post("/api/set_model", json={"model_type": "cebra"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["model_type"] == "cebra"
+
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    status_payload = status.get_json()
+    assert status_payload["model_type"] == "cebra"
+    assert "cnn" in status_payload["available_models"]
+    assert "cebra" in status_payload["available_models"]
+    assert "pca" in status_payload["available_viz_methods"]
+
+
+def test_set_viz_method_route_updates_status():
+    """Test that the Flask route switches the active visualization method."""
+    import webapp.app as webapp_module
+
+    webapp_module.bridge = None
+    app = webapp_module.app
+
+    client = app.test_client()
+
+    response = client.post("/api/set_viz_method", json={"viz_method": "lda"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["viz_method"] == "lda"
+
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    status_payload = status.get_json()
+    assert status_payload["viz_method"] == "lda"
+    assert "neural" in status_payload["available_viz_methods"]
+    assert "tsne" in status_payload["available_viz_methods"]
+
+
+def _checkpoint_dir() -> Path:
+    path = Path(__file__).resolve().parents[1] / "test_artifacts" / "checkpoints"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_emulator_bridge_can_save_model_snapshot(monkeypatch):
+    """Test that the bridge saves checkpoints with metadata."""
+    import webapp.emulator_bridge as bridge_module
+    from webapp.emulator_bridge import EmulatorBridge
+
+    checkpoint_dir = _checkpoint_dir()
+    monkeypatch.setattr(bridge_module, "CHECKPOINT_DIR", checkpoint_dir)
+
+    bridge = EmulatorBridge()
+    bridge.auto_tracking = True
+    for _ in range(8):
+        bridge.step()
+
+    path = bridge.save_model_snapshot("custom_test_snapshot")
+
+    assert path.exists()
+    assert path.name == "custom_test_snapshot.pt"
+    assert path.parent == checkpoint_dir
+
+
+def test_save_model_route_writes_checkpoint(monkeypatch):
+    """Test that the Flask save route writes a checkpoint file."""
+    import webapp.app as webapp_module
+    import webapp.emulator_bridge as bridge_module
+
+    checkpoint_dir = _checkpoint_dir()
+    monkeypatch.setattr(bridge_module, "CHECKPOINT_DIR", checkpoint_dir)
+    webapp_module.bridge = None
+    app = webapp_module.app
+
+    client = app.test_client()
+
+    response = client.post("/api/save_model", json={"name": "named_snapshot"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["filename"] == "named_snapshot.pt"
+
+    saved_path = Path(payload["path"])
+    assert saved_path.exists()
+    assert saved_path.parent == checkpoint_dir

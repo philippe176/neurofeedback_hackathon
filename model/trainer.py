@@ -204,6 +204,10 @@ class OnlineTrainer:
 
         entropy = entropy_regularization(out.logits)
         smoothness = temporal_smoothness_loss(out.projection)
+        auxiliary_loss = out.logits.sum() * 0.0
+        aux_loss_fn = getattr(self.model, "auxiliary_loss", None)
+        if callable(aux_loss_fn):
+            auxiliary_loss = aux_loss_fn(out, y, self.cfg)
 
         if labeled_in_batch == 0 and not rl_enabled:
             return _empty_metrics(rl_enabled=False)
@@ -211,6 +215,7 @@ class OnlineTrainer:
         total = (
             self.cfg.supervised_weight * manifold_supervised
             + self.cfg.policy_weight * policy
+            + self.cfg.contrastive_weight * auxiliary_loss
             - self.cfg.entropy_weight * entropy
             + self.cfg.smoothness_weight * smoothness
         )
@@ -239,6 +244,7 @@ class OnlineTrainer:
             total_loss=float(total.detach().cpu().item()),
             supervised_loss=float(manifold_supervised.detach().cpu().item()),
             policy_loss=float(policy.detach().cpu().item()),
+            auxiliary_loss=float(auxiliary_loss.detach().cpu().item()),
             entropy=float(entropy.detach().cpu().item()),
             smoothness_loss=float(smoothness.detach().cpu().item()),
             labeled_in_batch=labeled_in_batch,
@@ -280,6 +286,7 @@ def _empty_metrics(rl_enabled: bool) -> TrainingMetrics:
         total_loss=0.0,
         supervised_loss=0.0,
         policy_loss=0.0,
+        auxiliary_loss=0.0,
         entropy=0.0,
         smoothness_loss=0.0,
         labeled_in_batch=0,

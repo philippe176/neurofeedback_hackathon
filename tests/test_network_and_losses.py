@@ -1,6 +1,6 @@
-import numpy as np
 import torch
 
+from model.config import ModelConfig
 from model.losses import (
     centroid_separation_loss,
     class_conditional_temporal_loss,
@@ -9,9 +9,10 @@ from model.losses import (
     geometry_statistics,
     reward_weighted_policy_loss,
     supervised_classification_loss,
+    supervised_contrastive_loss,
     temporal_smoothness_loss,
 )
-from model.network import MovementDecoder
+from model.network import CEBRAMovementDecoder, ConvMovementDecoder, MovementDecoder, build_decoder
 
 
 def test_decoder_output_shapes_and_probability_simplex() -> None:
@@ -30,6 +31,43 @@ def test_decoder_output_shapes_and_probability_simplex() -> None:
     proj_row_sums = out.projection_probs.sum(dim=1)
     assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-6)
     assert torch.allclose(proj_row_sums, torch.ones_like(proj_row_sums), atol=1e-6)
+
+
+def test_all_decoder_variants_build_and_run() -> None:
+    cfg = ModelConfig(input_dim=32, hidden_dim=48, embedding_dim=12, projection_dim=2)
+    x = torch.randn(4, 32)
+
+    for model_type, expected_cls in (
+        ("dnn", MovementDecoder),
+        ("cnn", ConvMovementDecoder),
+        ("cebra", CEBRAMovementDecoder),
+    ):
+        model = build_decoder(model_type, cfg)
+        assert isinstance(model, expected_cls)
+
+        out = model(x)
+        assert out.logits.shape == (4, 4)
+        assert out.penultimate.shape == (4, 12)
+        assert out.projection.shape == (4, 2)
+        assert torch.allclose(out.probs.sum(dim=1), torch.ones(4), atol=1e-6)
+
+
+def test_cebra_auxiliary_loss_is_finite() -> None:
+    cfg = ModelConfig(input_dim=16, hidden_dim=32, embedding_dim=8, projection_dim=2)
+    model = CEBRAMovementDecoder(
+        input_dim=16,
+        hidden_dim=32,
+        embedding_dim=8,
+        n_classes=4,
+        projection_dim=2,
+    )
+    x = torch.randn(6, 16)
+    labels = torch.tensor([0, 0, 1, 1, 2, -1], dtype=torch.int64)
+
+    out = model(x)
+    loss = model.auxiliary_loss(out, labels, cfg)
+    assert torch.isfinite(loss)
+    assert float(loss.item()) >= 0.0
 
 
 def test_supervised_loss_ignores_unlabeled_rows() -> None:
@@ -76,6 +114,7 @@ def test_supervised_manifold_losses_are_finite() -> None:
     sep = centroid_separation_loss(embeddings, labels, margin=0.5, n_classes=4)
     temp = class_conditional_temporal_loss(embeddings, labels)
     within, between, fisher = geometry_statistics(embeddings, labels, n_classes=4)
+    contrastive = supervised_contrastive_loss(embeddings, labels)
 
     assert torch.isfinite(compact)
     assert torch.isfinite(sep)
@@ -83,6 +122,7 @@ def test_supervised_manifold_losses_are_finite() -> None:
     assert torch.isfinite(within)
     assert torch.isfinite(between)
     assert torch.isfinite(fisher)
+    assert torch.isfinite(contrastive)
     assert float(within.item()) >= 0.0
     assert float(between.item()) >= 0.0
 

@@ -133,10 +133,10 @@
                 <!-- Manifold Plot -->
                 <div class="viz-panel">
                     <div class="viz-header">
-                        <h2>Latent Space Projection</h2>
+                        <h2 id="projection-title">Neural Projection</h2>
                         <div class="viz-info">
                             <span id="cluster-count">Clusters: 0/4</span>
-                            <span id="cluster-separation">MinSep: -- | MeanSep: --</span>
+                            <span id="cluster-separation">MinSep: -- | MeanSep: -- | Spread: --</span>
                         </div>
                     </div>
                     <div id="manifold-plot" class="plot-container"></div>
@@ -157,6 +157,90 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Right Panel: Model Selection -->
+            <aside class="model-panel">
+                <section class="control-section">
+                    <h2>Model Selection</h2>
+                    <p class="help-text">Choose which decoder is used for classification.</p>
+                    <div class="model-options">
+                        <button id="model-dnn" class="btn btn-model active" data-model="dnn">
+                            <span class="model-title">DNN Decoder</span>
+                            <span class="model-description">Dense neural network baseline for fast online adaptation.</span>
+                        </button>
+                        <button id="model-cnn" class="btn btn-model" data-model="cnn">
+                            <span class="model-title">CNN Decoder</span>
+                            <span class="model-description">1D convolutional encoder to capture local signal structure.</span>
+                        </button>
+                        <button id="model-cebra" class="btn btn-model" data-model="cebra">
+                            <span class="model-title">CEBRA-Inspired Decoder</span>
+                            <span class="model-description">Contrastive latent encoder with class-prototype decoding.</span>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Active Model</h2>
+                    <div class="state-display">
+                        <div class="state-row">
+                            <span class="state-label">Selected:</span>
+                            <span id="active-model-name" class="state-value">DNN Decoder</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Type:</span>
+                            <span id="active-model-type" class="state-value">dnn</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Visualization Mode</h2>
+                    <p class="help-text">Choose how the same embedding space is projected for the live plot.</p>
+                    <div class="model-options">
+                        <button id="viz-neural" class="btn btn-model active btn-viz" data-viz="neural">
+                            <span class="model-title">Neural Projection</span>
+                            <span class="model-description">Current learned projection head from the decoder.</span>
+                        </button>
+                        <button id="viz-pca" class="btn btn-model btn-viz" data-viz="pca">
+                            <span class="model-title">PCA Projection</span>
+                            <span class="model-description">Linear projection from recent penultimate embeddings.</span>
+                        </button>
+                        <button id="viz-lda" class="btn btn-model btn-viz" data-viz="lda">
+                            <span class="model-title">LDA Projection</span>
+                            <span class="model-description">Label-aware projection emphasizing class separation.</span>
+                        </button>
+                        <button id="viz-tsne" class="btn btn-model btn-viz" data-viz="tsne">
+                            <span class="model-title">t-SNE Projection</span>
+                            <span class="model-description">Periodic cached nonlinear projection on a rolling buffer.</span>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Active Visualization</h2>
+                    <div class="state-display">
+                        <div class="state-row">
+                            <span class="state-label">Selected:</span>
+                            <span id="active-viz-name" class="state-value">Neural Projection</span>
+                        </div>
+                        <div class="state-row">
+                            <span class="state-label">Type:</span>
+                            <span id="active-viz-type" class="state-value">neural</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="control-section">
+                    <h2>Save Snapshot</h2>
+                    <p class="help-text">Save the current decoder state with a custom name or use the suggested one.</p>
+                    <div class="save-model-controls">
+                        <label class="input-label" for="save-model-name">Checkpoint Name</label>
+                        <input id="save-model-name" class="text-input" type="text" value="dnn_neural">
+                        <button id="btn-save-model" class="btn btn-primary btn-large">Save Model Snapshot</button>
+                        <div id="save-model-status" class="save-status">Ready to save.</div>
+                    </div>
+                </section>
+            </aside>
         </main>
 
         <!-- Footer -->

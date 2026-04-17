@@ -72,3 +72,4 @@ def test_arg_parser_defaults() -> None:
     assert args.host == "localhost"
     assert args.port == 5555
     assert args.embedding_key == "data"
+    assert args.viz_method == "neural"

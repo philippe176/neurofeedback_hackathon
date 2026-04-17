@@ -50,6 +50,12 @@ def status():
         "sample_count": b.sample_count,
         "model_updates": b.trainer.num_updates if b.trainer else 0,
         "difficulty": b.difficulty,
+        "model_type": b.model_type,
+        "model_name": b.model_name,
+        "available_models": b.available_models(),
+        "viz_method": b.viz_method,
+        "viz_name": b.viz_name,
+        "available_viz_methods": b.available_viz_methods(),
     })
 
 
@@ -79,6 +85,58 @@ def set_centroid_window():
     b = get_bridge()
     b.centroid_window = max(10, min(window, 300))
     return jsonify({"success": True, "window": b.centroid_window})
+
+
+@app.route("/api/set_model", methods=["POST"])
+def set_model():
+    """Set the active model implementation."""
+    data = request.get_json() or {}
+    model_type = data.get("model_type", "dnn")
+    b = get_bridge()
+    try:
+        b.set_model(model_type)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({
+        "success": True,
+        "model_type": b.model_type,
+        "model_name": b.model_name,
+    })
+
+
+@app.route("/api/set_viz_method", methods=["POST"])
+def set_viz_method():
+    """Set the active visualization backend."""
+    data = request.get_json() or {}
+    viz_method = data.get("viz_method", "neural")
+    b = get_bridge()
+    try:
+        b.set_viz_method(viz_method)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({
+        "success": True,
+        "viz_method": b.viz_method,
+        "viz_name": b.viz_name,
+    })
+
+
+@app.route("/api/save_model", methods=["POST"])
+def save_model():
+    """Save the active decoder checkpoint with an optional custom name."""
+    data = request.get_json() or {}
+    requested_name = data.get("name")
+    b = get_bridge()
+    try:
+        path = b.save_model_snapshot(requested_name)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+    return jsonify({
+        "success": True,
+        "path": str(path),
+        "filename": path.name,
+        "default_name": b.default_checkpoint_name(),
+    })
 
 
 @app.route("/api/reset", methods=["POST"])
@@ -148,6 +206,48 @@ def handle_set_centroid_window(data):
     b = get_bridge()
     b.centroid_window = max(10, min(window, 300))
     emit("centroid_window_changed", {"window": b.centroid_window})
+
+
+@socketio.on("set_model")
+def handle_set_model(data):
+    """Handle model selection from client."""
+    model_type = (data or {}).get("model_type", "dnn")
+    b = get_bridge()
+    try:
+        b.set_model(model_type)
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+    emit(
+        "model_changed",
+        {
+            "model_type": b.model_type,
+            "model_name": b.model_name,
+            "available_models": b.available_models(),
+        },
+        broadcast=True,
+    )
+
+
+@socketio.on("set_viz_method")
+def handle_set_viz_method(data):
+    """Handle visualization selection from client."""
+    viz_method = (data or {}).get("viz_method", "neural")
+    b = get_bridge()
+    try:
+        b.set_viz_method(viz_method)
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+    emit(
+        "viz_method_changed",
+        {
+            "viz_method": b.viz_method,
+            "viz_name": b.viz_name,
+            "available_viz_methods": b.available_viz_methods(),
+        },
+        broadcast=True,
+    )
 
 
 def streaming_loop():

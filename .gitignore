@@ -71,3 +71,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Test cache
+pytest-cache*
+
+# Saved models
+saved_models/
+test_artifacts/

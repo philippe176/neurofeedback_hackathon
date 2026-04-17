@@ -47,6 +47,11 @@ let isStreaming = false;
 let currentClass = null;
 let autoTracking = false;
 let centroidWindow = 50;
+let currentModelType = 'dnn';
+let currentModelName = 'DNN Decoder';
+let currentVizMethod = 'neural';
+let currentVizName = 'Neural Projection';
+let hasCustomSaveName = false;
 
 // ========================================
 // Initialization
@@ -56,6 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeSocket();
     initializePlots();
     initializeControls();
+    loadInitialStatus();
 });
 
 function initializeSocket() {
@@ -92,6 +98,18 @@ function initializeSocket() {
 
     socket.on('error', (data) => {
         console.error('Server error:', data.message);
+    });
+
+    socket.on('model_changed', (data) => {
+        currentModelType = data.model_type;
+        currentModelName = data.model_name;
+        updateModelSelection();
+    });
+
+    socket.on('viz_method_changed', (data) => {
+        currentVizMethod = data.viz_method;
+        currentVizName = data.viz_name;
+        updateVisualizationSelection();
     });
 }
 
@@ -213,6 +231,61 @@ function initializeControls() {
         centroidWindow = parseInt(slider.value);
         socket.emit('set_centroid_window', { window: centroidWindow });
     });
+
+    document.querySelectorAll('.btn-model').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (btn.dataset.viz) {
+                return;
+            }
+            const modelType = btn.dataset.model;
+            if (modelType === currentModelType) {
+                return;
+            }
+            socket.emit('set_model', { model_type: modelType });
+        });
+    });
+
+    document.querySelectorAll('.btn-viz').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const vizMethod = btn.dataset.viz;
+            if (vizMethod === currentVizMethod) {
+                return;
+            }
+            socket.emit('set_viz_method', { viz_method: vizMethod });
+        });
+    });
+
+    const saveInput = document.getElementById('save-model-name');
+    saveInput.addEventListener('input', () => {
+        hasCustomSaveName = saveInput.value.trim().length > 0 && saveInput.value !== buildDefaultSaveName();
+    });
+
+    document.getElementById('btn-save-model').addEventListener('click', saveModelSnapshot);
+}
+
+async function loadInitialStatus() {
+    try {
+        const response = await fetch('/api/status');
+        const data = await response.json();
+
+        isStreaming = data.streaming;
+        currentClass = data.current_class;
+        autoTracking = data.auto_tracking;
+        currentModelType = data.model_type || 'dnn';
+        currentModelName = data.model_name || 'DNN Decoder';
+        currentVizMethod = data.viz_method || 'neural';
+        currentVizName = data.viz_name || 'Neural Projection';
+
+        updateStreamingButtons();
+        updateClassButtons();
+        updateTrackingButton();
+        updateModelSelection();
+        updateVisualizationSelection();
+        ensureDefaultSaveName();
+        updateSampleCounter(data.sample_count || 0);
+    } catch (error) {
+        console.error('Failed to load initial status:', error);
+    }
 }
 
 // ========================================
@@ -237,6 +310,18 @@ function handleUpdate(data) {
     if (data.auto_tracking !== autoTracking) {
         autoTracking = data.auto_tracking;
         updateTrackingButton();
+    }
+
+    if (data.model_type && data.model_type !== currentModelType) {
+        currentModelType = data.model_type;
+        currentModelName = data.model_name || currentModelName;
+        updateModelSelection();
+    }
+
+    if (data.viz_method && data.viz_method !== currentVizMethod) {
+        currentVizMethod = data.viz_method;
+        currentVizName = data.viz_name || currentVizName;
+        updateVisualizationSelection();
     }
 }
 
@@ -304,13 +389,88 @@ function updateTrackingButton() {
     }
 }
 
+function updateModelSelection() {
+    document.querySelectorAll('.btn-model[data-model]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.model === currentModelType);
+    });
+
+    document.getElementById('active-model-name').textContent = currentModelName;
+    document.getElementById('active-model-type').textContent = currentModelType;
+    ensureDefaultSaveName();
+}
+
+function updateVisualizationSelection() {
+    document.querySelectorAll('.btn-viz').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.viz === currentVizMethod);
+    });
+
+    document.getElementById('active-viz-name').textContent = currentVizName;
+    document.getElementById('active-viz-type').textContent = currentVizMethod;
+    document.getElementById('projection-title').textContent = currentVizName;
+    ensureDefaultSaveName();
+}
+
 function updateClusterInfo(data) {
     const numCentroids = Object.keys(data.centroids).length;
     document.getElementById('cluster-count').textContent = `Clusters: ${numCentroids}/4`;
 
     const minSep = data.min_separation.toFixed(2);
     const meanSep = data.mean_separation.toFixed(2);
-    document.getElementById('cluster-separation').textContent = `MinSep: ${minSep} | MeanSep: ${meanSep}`;
+    const meanSpread = data.mean_spread.toFixed(2);
+    document.getElementById('cluster-separation').textContent = `MinSep: ${minSep} | MeanSep: ${meanSep} | Spread: ${meanSpread}`;
+}
+
+function buildDefaultSaveName() {
+    return `${currentModelType}_${currentVizMethod}`;
+}
+
+function ensureDefaultSaveName(force = false) {
+    const input = document.getElementById('save-model-name');
+    if (!input) {
+        return;
+    }
+
+    if (force || !hasCustomSaveName || input.value.trim() === '') {
+        input.value = buildDefaultSaveName();
+        hasCustomSaveName = false;
+    }
+}
+
+function setSaveStatus(message, kind = '') {
+    const elem = document.getElementById('save-model-status');
+    elem.textContent = message;
+    elem.className = `save-status${kind ? ` ${kind}` : ''}`;
+}
+
+async function saveModelSnapshot() {
+    const button = document.getElementById('btn-save-model');
+    const input = document.getElementById('save-model-name');
+    const name = input.value.trim() || buildDefaultSaveName();
+
+    button.disabled = true;
+    setSaveStatus('Saving snapshot...');
+
+    try {
+        const response = await fetch('/api/save_model', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Failed to save model snapshot');
+        }
+        input.value = data.default_name || name;
+        hasCustomSaveName = false;
+        setSaveStatus(`Saved as ${data.filename}`, 'success');
+    } catch (error) {
+        console.error('Failed to save model snapshot:', error);
+        setSaveStatus(error.message || 'Failed to save model snapshot', 'error');
+    } finally {
+        button.disabled = false;
+    }
 }
 
 // ========================================

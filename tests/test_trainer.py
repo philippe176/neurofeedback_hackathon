@@ -2,12 +2,16 @@ import numpy as np
 import torch
 
 from model.config import ModelConfig
-from model.network import MovementDecoder
+from model.network import build_decoder
 from model.reward import ProgrammaticReward
 from model.trainer import OnlineTrainer
 
 
-def _make_trainer(input_dim: int = 16, warmup_labeled: int = 2) -> OnlineTrainer:
+def _make_trainer(
+    input_dim: int = 16,
+    warmup_labeled: int = 2,
+    model_type: str = "dnn",
+) -> OnlineTrainer:
     cfg = ModelConfig(
         input_dim=input_dim,
         hidden_dim=32,
@@ -20,13 +24,7 @@ def _make_trainer(input_dim: int = 16, warmup_labeled: int = 2) -> OnlineTrainer
         warmup_labeled_samples=warmup_labeled,
         device="cpu",
     )
-    model = MovementDecoder(
-        input_dim=input_dim,
-        hidden_dim=cfg.hidden_dim,
-        embedding_dim=cfg.embedding_dim,
-        n_classes=cfg.n_classes,
-        projection_dim=cfg.projection_dim,
-    )
+    model = build_decoder(model_type, cfg)
     reward = ProgrammaticReward(cfg)
     return OnlineTrainer(model=model, cfg=cfg, reward_provider=reward, device=torch.device("cpu"))
 
@@ -71,3 +69,16 @@ def test_trainer_skips_update_when_unlabeled_and_rl_disabled(make_stream_sample)
 
     assert out2.training is not None
     assert not out2.training.update_applied
+
+
+def test_trainer_supports_cnn_and_cebra_variants(make_stream_sample) -> None:
+    for model_type in ("cnn", "cebra"):
+        trainer = _make_trainer(input_dim=16, warmup_labeled=2, model_type=model_type)
+
+        trainer.process_sample(make_stream_sample(idx=1, dim=16, label=0))
+        out = trainer.process_sample(make_stream_sample(idx=2, dim=16, label=1))
+
+        assert out.training is not None
+        assert out.training.update_applied
+        assert out.projection.shape == (2,)
+        assert 0.0 <= out.confidence <= 1.0

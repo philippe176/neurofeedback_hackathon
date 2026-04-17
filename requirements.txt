@@ -1,6 +1,7 @@
 # Core dependencies
 numpy>=1.26
 torch>=2.2
+scikit-learn>=1.4
 
 # Emulator (ZMQ-based streaming)
 pyzmq>=25.0

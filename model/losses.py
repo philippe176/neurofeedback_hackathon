@@ -174,6 +174,38 @@ def entropy_regularization(logits: Tensor) -> Tensor:
     return dist.entropy().mean()
 
 
+def supervised_contrastive_loss(
+    embeddings: Tensor,
+    labels: Tensor,
+    temperature: float = 0.20,
+) -> Tensor:
+    """Supervised contrastive loss on labeled samples only."""
+    mask = labels >= 0
+    if not torch.any(mask):
+        return embeddings.sum() * 0.0
+
+    emb = F.normalize(embeddings[mask], p=2, dim=-1)
+    y = labels[mask]
+    if emb.shape[0] < 2:
+        return emb.sum() * 0.0
+
+    logits = emb @ emb.T / max(float(temperature), 1e-6)
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+
+    self_mask = torch.eye(logits.shape[0], dtype=torch.bool, device=logits.device)
+    positive_mask = (y.unsqueeze(0) == y.unsqueeze(1)) & ~self_mask
+    if not torch.any(positive_mask):
+        return logits.sum() * 0.0
+
+    exp_logits = torch.exp(logits) * (~self_mask)
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-8)
+
+    positive_count = positive_mask.sum(dim=1)
+    valid = positive_count > 0
+    mean_log_prob_pos = (positive_mask * log_prob).sum(dim=1) / positive_count.clamp(min=1)
+    return -mean_log_prob_pos[valid].mean()
+
+
 def temporal_smoothness_loss(projections: Tensor) -> Tensor:
     """Encourage consecutive projected points to move smoothly."""
     if projections.shape[0] < 2:

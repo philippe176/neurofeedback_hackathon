@@ -44,6 +44,8 @@ class ModelConfig:
     lambda_proj_compact: float = 0.20  # Increased from 0.05 - tighter clusters
     lambda_proj_sep: float = 0.25      # Increased from 0.05 - push clusters apart
     lambda_proj_temp: float = 0.02
+    contrastive_weight: float = 0.10
+    contrastive_temperature: float = 0.20
 
     latent_sep_margin: float = 0.80
     projection_sep_margin: float = 0.45
@@ -70,24 +72,42 @@ class ModelConfig:
     viz_history: int = 300
     viz_draw_every: int = 2
     viz_ema_alpha: float = 0.25
+    viz_method: str = "neural"
+    viz_fit_window: int = 300
+    viz_refit_every: int = 10
+    viz_use_penultimate: bool = True
+    viz_tsne_perplexity: float = 20.0
 
     # Runtime
     heartbeat_every: int = 20
     device: str = "auto"
 
     def __post_init__(self) -> None:
+        allowed_viz_methods = {"neural", "pca", "lda", "tsne", "umap"}
         if self.projection_dim not in (2, 3):
             raise ValueError("projection_dim must be 2 or 3")
         if self.batch_size < 2:
             raise ValueError("batch_size must be at least 2")
         if self.update_every < 1:
             raise ValueError("update_every must be >= 1")
+        if self.viz_method not in allowed_viz_methods:
+            raise ValueError(f"viz_method must be one of {sorted(allowed_viz_methods)}")
+        if self.viz_fit_window < 10:
+            raise ValueError("viz_fit_window must be at least 10")
+        if self.viz_refit_every < 1:
+            raise ValueError("viz_refit_every must be >= 1")
+        if self.viz_tsne_perplexity <= 0.0:
+            raise ValueError("viz_tsne_perplexity must be > 0")
         if self.latent_sep_margin <= 0.0:
             raise ValueError("latent_sep_margin must be > 0")
         if self.projection_sep_margin <= 0.0:
             raise ValueError("projection_sep_margin must be > 0")
         if self.classification_focal_gamma is not None and self.classification_focal_gamma < 0.0:
             raise ValueError("classification_focal_gamma must be >= 0")
+        if self.contrastive_weight < 0.0:
+            raise ValueError("contrastive_weight must be >= 0")
+        if self.contrastive_temperature <= 0.0:
+            raise ValueError("contrastive_temperature must be > 0")
         if self.class_weights is not None:
             if len(self.class_weights) != self.n_classes:
                 raise ValueError("class_weights must have length n_classes")

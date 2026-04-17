@@ -46,6 +46,7 @@ class TrainingMetrics:
     total_loss: float
     supervised_loss: float
     policy_loss: float
+    auxiliary_loss: float
     entropy: float
     smoothness_loss: float
     labeled_in_batch: int
