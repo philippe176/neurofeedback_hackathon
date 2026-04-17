@@ -16,6 +16,9 @@ class StrategyCluster:
     size: int
     centroid_2d: np.ndarray
     confidence: float
+    centroid_confidence: float
+    confidence_min: float
+    confidence_max: float
     is_best: bool
 
 
@@ -26,6 +29,9 @@ class ExplorationResult:
     n_clusters: int
     points_2d: np.ndarray
     cluster_labels: np.ndarray
+    point_target_probabilities: np.ndarray
+    point_predicted_classes: np.ndarray
+    mean_target_probability: float
     clusters: list[StrategyCluster]
     best_cluster_id: int | None
 
@@ -36,12 +42,18 @@ class ExplorationResult:
             "n_clusters": self.n_clusters,
             "points_2d": self.points_2d.tolist(),
             "cluster_labels": self.cluster_labels.tolist(),
+            "point_target_probabilities": self.point_target_probabilities.tolist(),
+            "point_predicted_classes": self.point_predicted_classes.tolist(),
+            "mean_target_probability": self.mean_target_probability,
             "clusters": [
                 {
                     "cluster_id": c.cluster_id,
                     "size": c.size,
                     "centroid_2d": c.centroid_2d.tolist(),
                     "confidence": c.confidence,
+                    "centroid_confidence": c.centroid_confidence,
+                    "confidence_min": c.confidence_min,
+                    "confidence_max": c.confidence_max,
                     "is_best": c.is_best,
                 }
                 for c in self.clusters
@@ -77,11 +89,30 @@ def analyze_strategies(
         centroids_2d = np.column_stack([centroids_2d, np.zeros(centroids_2d.shape[0], dtype=np.float32)])
 
     with torch.no_grad():
+        points_t = torch.from_numpy(penultimate).to(device, dtype=torch.float32)
+        points_t = torch.nn.functional.normalize(points_t, p=2, dim=-1)
+        point_probs = model.score_penultimate(points_t).cpu().numpy()
+
         centroids_t = torch.from_numpy(centroids_np).to(device, dtype=torch.float32)
         centroids_t = torch.nn.functional.normalize(centroids_t, p=2, dim=-1)
-        probs = model.score_penultimate(centroids_t).cpu().numpy()
+        centroid_probs = model.score_penultimate(centroids_t).cpu().numpy()
 
-    cluster_confs = probs[:, target_class]
+    point_target_probs = point_probs[:, target_class]
+    point_predicted_classes = np.argmax(point_probs, axis=1).astype(np.int64)
+
+    cluster_confs = np.zeros(k, dtype=np.float32)
+    cluster_centroid_confs = centroid_probs[:, target_class]
+    cluster_conf_mins = np.zeros(k, dtype=np.float32)
+    cluster_conf_maxs = np.zeros(k, dtype=np.float32)
+    for i in range(k):
+        mask = cluster_labels == i
+        cluster_points = point_target_probs[mask]
+        if cluster_points.size == 0:
+            continue
+        cluster_confs[i] = float(np.mean(cluster_points))
+        cluster_conf_mins[i] = float(np.min(cluster_points))
+        cluster_conf_maxs[i] = float(np.max(cluster_points))
+
     best_id = int(np.argmax(cluster_confs))
 
     sorted_confs = np.sort(cluster_confs)[::-1]
@@ -96,6 +127,9 @@ def analyze_strategies(
             size=int(mask.sum()),
             centroid_2d=centroids_2d[i].copy(),
             confidence=float(cluster_confs[i]),
+            centroid_confidence=float(cluster_centroid_confs[i]),
+            confidence_min=float(cluster_conf_mins[i]),
+            confidence_max=float(cluster_conf_maxs[i]),
             is_best=(i == best_id and flag_best),
         ))
 
@@ -105,6 +139,9 @@ def analyze_strategies(
         n_clusters=k,
         points_2d=points_2d,
         cluster_labels=cluster_labels,
+        point_target_probabilities=point_target_probs.astype(np.float32),
+        point_predicted_classes=point_predicted_classes,
+        mean_target_probability=float(np.mean(point_target_probs)),
         clusters=clusters,
         best_cluster_id=best_id if flag_best else None,
     )

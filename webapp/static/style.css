@@ -505,8 +505,20 @@ code {
     height: 460px;
 }
 
+.plot-medium {
+    height: 360px;
+}
+
 .plot-small {
     height: 260px;
+}
+
+.exploration-window {
+    border-color: rgba(192, 132, 252, 0.28);
+    background:
+        radial-gradient(circle at top left, rgba(192, 132, 252, 0.12), transparent 34%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01)),
+        var(--panel-strong);
 }
 
 .chart-row {
@@ -638,6 +650,10 @@ code {
 
     .plot-large {
         height: 380px;
+    }
+
+    .plot-medium {
+        height: 320px;
     }
 
     .plot-small {

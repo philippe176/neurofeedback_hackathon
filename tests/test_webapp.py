@@ -237,6 +237,58 @@ def test_emulator_bridge_freezes_model_and_graph_outside_calibration():
     assert last["training"]["num_updates"] == updates_before
 
 
+def test_emulator_bridge_exploration_scores_points_with_frozen_model():
+    from webapp.emulator_bridge import EmulatorBridge
+
+    exploration_samples = []
+    for i in range(65):
+        sample = make_sample(i, 0)
+        sample.embedding = sample.embedding + np.roll(
+            np.linspace(0.0, 0.03, sample.embedding.shape[0], dtype=np.float32),
+            i % sample.embedding.shape[0],
+        )
+        exploration_samples.append(sample)
+    receiver = FakeReceiver(exploration_samples)
+    bridge = EmulatorBridge(
+        receiver=receiver,
+        training_phase="exploration",
+        transition_ignore_samples=40,
+    )
+    bridge.set_exploration_class(0)
+
+    last = None
+    for _ in range(65):
+        last = bridge.step(timeout=0.0)
+
+    assert last is not None
+    exploration = last["exploration"]
+    assert exploration is not None
+    analysis = exploration["analysis"]
+    assert analysis is not None
+    assert len(analysis["point_target_probabilities"]) == len(analysis["points_2d"])
+    assert len(analysis["point_predicted_classes"]) == len(analysis["points_2d"])
+    assert 0.0 <= analysis["mean_target_probability"] <= 1.0
+    assert analysis["clusters"]
+    assert "confidence_max" in analysis["clusters"][0]
+
+
+def test_emulator_bridge_exploration_keeps_rolling_3000_points():
+    from webapp.emulator_bridge import EmulatorBridge
+
+    receiver = FakeReceiver([make_sample(i, 0) for i in range(3050)])
+    bridge = EmulatorBridge(
+        receiver=receiver,
+        training_phase="exploration",
+        transition_ignore_samples=0,
+    )
+    bridge.set_exploration_class(0)
+
+    for _ in range(3050):
+        bridge.step(timeout=0.0)
+
+    assert len(bridge._exploration_penultimate) == 3000
+
+
 def test_emulator_bridge_can_switch_model_and_viz_before_samples():
     from webapp.emulator_bridge import EmulatorBridge
 

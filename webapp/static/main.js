@@ -45,6 +45,9 @@ let latestData = null;
 let hasCustomSaveName = false;
 let explorationTargetClass = 0;
 let explorationState = null;
+let explorationPulseCount = 0;
+let explorationPulseUntilMs = 0;
+let explorationPulseTimer = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     initializeSocket();
@@ -195,6 +198,7 @@ function initializeControls() {
 
 function initializePlots() {
     Plotly.newPlot('manifold-plot', [], manifoldLayout(), plotConfig());
+    Plotly.newPlot('exploration-plot', [], explorationLayout(), plotConfig());
     Plotly.newPlot('probs-plot', [], probsLayout(), plotConfig());
     Plotly.newPlot('metrics-plot', [], metricsLayout(), plotConfig());
 }
@@ -269,6 +273,7 @@ function renderAll() {
     updateSampleCounter(latestData.sample_idx || 0);
     renderPanels();
     updateManifoldPlot(latestData);
+    updateExplorationPlot(latestData);
     updateProbabilitiesPlot(latestData);
     updateMetricsPlot(latestData);
 }
@@ -519,8 +524,15 @@ async function resetDecoder() {
         calibrationState = {};
         coachState = {};
         sessionState = {};
+        explorationPulseCount = 0;
+        explorationPulseUntilMs = 0;
+        if (explorationPulseTimer) {
+            clearTimeout(explorationPulseTimer);
+            explorationPulseTimer = null;
+        }
         await loadInitialStatus();
         Plotly.react('manifold-plot', [], manifoldLayout(), plotConfig());
+        Plotly.react('exploration-plot', [], explorationLayout(), plotConfig());
         Plotly.react('probs-plot', [], probsLayout(), plotConfig());
         Plotly.react('metrics-plot', [], metricsLayout(), plotConfig());
     } catch (error) {
@@ -587,7 +599,6 @@ function updateManifoldPlot(data) {
     }
 
     const traces = [];
-
     for (let cls = 0; cls < 4; cls += 1) {
         const classPoints = clusterPoints.filter((_, idx) => clusterLabels[idx] === cls);
         if (!classPoints.length) {
@@ -693,45 +704,6 @@ function updateManifoldPlot(data) {
         });
     }
 
-    if (trainingPhase === 'exploration' && explorationState && explorationState.analysis) {
-        const ea = explorationState.analysis;
-        const CLUSTER_COLORS = ['#c084fc', '#22d3ee', '#fb923c', '#a3e635', '#f472b6'];
-        for (let cid = 0; cid < ea.n_clusters; cid++) {
-            const clusterPts = ea.points_2d.filter((_, i) => ea.cluster_labels[i] === cid);
-            const cInfo = ea.clusters.find((c) => c.cluster_id === cid);
-            const color = CLUSTER_COLORS[cid % CLUSTER_COLORS.length];
-            traces.push({
-                x: clusterPts.map((p) => p[0]),
-                y: clusterPts.map((p) => p[1]),
-                mode: 'markers',
-                type: 'scatter',
-                name: `Strat ${cid + 1} (${(cInfo.confidence * 100).toFixed(0)}%)`,
-                marker: {
-                    color: color,
-                    size: cInfo.is_best ? 10 : 7,
-                    opacity: 0.7,
-                    symbol: cInfo.is_best ? 'star' : 'circle',
-                },
-            });
-            traces.push({
-                x: [cInfo.centroid_2d[0]],
-                y: [cInfo.centroid_2d[1]],
-                mode: 'markers+text',
-                type: 'scatter',
-                text: [`S${cid + 1}`],
-                textposition: 'top center',
-                textfont: { color: color, size: 11 },
-                marker: {
-                    color: color,
-                    size: 18,
-                    symbol: cInfo.is_best ? 'star' : 'diamond',
-                    line: { color: '#f8fafc', width: 2 },
-                },
-                showlegend: false,
-            });
-        }
-    }
-
     Plotly.react('manifold-plot', traces, manifoldLayout(), plotConfig());
 
     const displayCount = clusterPoints.length;
@@ -741,6 +713,98 @@ function updateManifoldPlot(data) {
         `Zones: ${Object.keys(centroids).length}/4 | ${graphState} | Bank ${displayCount}${targetPerClass ? ` (${targetPerClass}/class target)` : ''}`;
     document.getElementById('cluster-separation').textContent =
         `MinSep: ${formatFixed(data.min_separation)} | MeanSep: ${formatFixed(data.mean_separation)} | Spread: ${formatFixed(data.mean_spread)}`;
+}
+
+function updateExplorationPlot(data) {
+    const panel = document.getElementById('exploration-map-panel');
+    if (trainingPhase !== 'exploration') {
+        panel.style.display = 'none';
+        Plotly.react('exploration-plot', [], explorationLayout(), plotConfig());
+        document.getElementById('exploration-map-count').textContent = 'Strategies: --';
+        document.getElementById('exploration-map-best').textContent = 'Best: --';
+        return;
+    }
+
+    panel.style.display = '';
+    const analysis = explorationState ? explorationState.analysis : null;
+    if (!analysis) {
+        Plotly.react('exploration-plot', [], explorationLayout(), plotConfig());
+        document.getElementById('exploration-map-count').textContent = 'Strategies: Collecting...';
+        document.getElementById('exploration-map-best').textContent = 'Best: --';
+        return;
+    }
+
+    const targetProbabilities = analysis.point_target_probabilities || [];
+    const collected = explorationState ? (explorationState.n_collected || 0) : 0;
+    if (collected > explorationPulseCount) {
+        explorationPulseCount = collected;
+        explorationPulseUntilMs = Date.now() + 750;
+        if (explorationPulseTimer) {
+            clearTimeout(explorationPulseTimer);
+        }
+        explorationPulseTimer = setTimeout(() => {
+            explorationPulseTimer = null;
+            if (latestData && trainingPhase === 'exploration') {
+                updateExplorationPlot(latestData);
+            }
+        }, 760);
+    }
+
+    const pulseActive = Date.now() < explorationPulseUntilMs;
+    const markerSizes = analysis.points_2d.map((_, index) => (
+        pulseActive && index === (analysis.points_2d.length - 1) ? 16 : 8
+    ));
+    const traces = [{
+        x: analysis.points_2d.map((point) => point[0]),
+        y: analysis.points_2d.map((point) => point[1]),
+        mode: 'markers',
+        type: 'scatter',
+        name: 'Exploration',
+        marker: {
+            color: targetProbabilities,
+            size: markerSizes,
+            opacity: 0.92,
+            symbol: 'circle',
+            colorscale: [
+                [0.0, '#0f172a'],
+                [0.2, '#1d4ed8'],
+                [0.5, '#22d3ee'],
+                [0.75, '#a3e635'],
+                [1.0, '#facc15'],
+            ],
+            cmin: 0,
+            cmax: 1,
+            showscale: true,
+            colorbar: {
+                title: {
+                    text: 'P(correct label)',
+                    side: 'right',
+                },
+                tickformat: '.0%',
+                len: 0.78,
+                thickness: 14,
+                outlinewidth: 0,
+            },
+        },
+        customdata: targetProbabilities.map((prob, index) => [prob, index + 1]),
+        hovertemplate:
+            'Point %{customdata[1]}<br>' +
+            'P(correct label): %{customdata[0]:.1%}<br>' +
+            'x=%{x:.2f}<br>y=%{y:.2f}<extra></extra>',
+    }];
+
+    Plotly.react('exploration-plot', traces, explorationLayout(), plotConfig());
+    document.getElementById('exploration-map-count').textContent =
+        `Points: ${analysis.n_samples} | Mean target prob ${(analysis.mean_target_probability * 100).toFixed(1)}%`;
+    if (analysis.best_cluster_id !== null && analysis.best_cluster_id !== undefined) {
+        const best = analysis.clusters.find((c) => c.cluster_id === analysis.best_cluster_id);
+        document.getElementById('exploration-map-best').textContent =
+            best
+                ? `Best: Strategy ${analysis.best_cluster_id + 1} (${(best.confidence * 100).toFixed(1)}% mean, ${(best.confidence_max * 100).toFixed(1)}% peak)`
+                : 'Best: --';
+    } else {
+        document.getElementById('exploration-map-best').textContent = 'Best: No clear winner yet';
+    }
 }
 
 function updateProbabilitiesPlot(data) {
@@ -828,6 +892,31 @@ function manifoldLayout() {
         },
         yaxis: {
             title: 'Latent Zone Y',
+            gridcolor: THEME.grid,
+            zerolinecolor: THEME.grid,
+        },
+        legend: {
+            orientation: 'h',
+            y: 1.12,
+            x: 0,
+            bgcolor: 'rgba(0,0,0,0)',
+        },
+    };
+}
+
+function explorationLayout() {
+    return {
+        paper_bgcolor: THEME.panel,
+        plot_bgcolor: THEME.panel,
+        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        margin: { t: 24, r: 20, b: 48, l: 52 },
+        xaxis: {
+            title: 'Strategy Axis X',
+            gridcolor: THEME.grid,
+            zerolinecolor: THEME.grid,
+        },
+        yaxis: {
+            title: 'Strategy Axis Y',
             gridcolor: THEME.grid,
             zerolinecolor: THEME.grid,
         },

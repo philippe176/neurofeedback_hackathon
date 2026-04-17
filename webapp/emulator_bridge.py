@@ -139,6 +139,7 @@ class EmulatorBridge:
         self.display_min_samples_per_class = max(1, int(display_min_samples_per_class))
         self.viz_fit_window = max(10, min(viz_fit_window, history_len))
         self.viz_refit_every = max(1, viz_refit_every)
+        self.exploration_max_points = 3000
 
         self.receiver: StreamReceiver = receiver or ZMQEmbeddingReceiver(
             host=stream_host,
@@ -207,7 +208,7 @@ class EmulatorBridge:
         self._reference_snapshot_ready = False
 
         self.exploration_target_class: int | None = None
-        self._exploration_penultimate: list[np.ndarray] = []
+        self._exploration_penultimate: deque[np.ndarray] = deque(maxlen=self.exploration_max_points)
         self._exploration_reanalyze_every: int = 10
         self._exploration_last_analysis: int = 0
         self._exploration_result: dict | None = None
@@ -243,7 +244,7 @@ class EmulatorBridge:
             self.trainer.frozen = (normalized != "calibration")
 
         if normalized == "exploration":
-            self._exploration_penultimate = []
+            self._exploration_penultimate = deque(maxlen=self.exploration_max_points)
             self._exploration_last_analysis = 0
             self._exploration_result = None
             if self.exploration_target_class is None:
@@ -255,7 +256,7 @@ class EmulatorBridge:
         if class_idx not in range(4):
             raise ValueError(f"Invalid class index: {class_idx}")
         self.exploration_target_class = class_idx
-        self._exploration_penultimate = []
+        self._exploration_penultimate = deque(maxlen=self.exploration_max_points)
         self._exploration_last_analysis = 0
         self._exploration_result = None
 
@@ -749,8 +750,6 @@ class EmulatorBridge:
             self._exploration_penultimate.append(
                 np.asarray(result.penultimate, dtype=float).copy()
             )
-            if len(self._exploration_penultimate) > 500:
-                self._exploration_penultimate = self._exploration_penultimate[-500:]
             n = len(self._exploration_penultimate)
             if n >= 20 and (n - self._exploration_last_analysis) >= self._exploration_reanalyze_every:
                 self._run_exploration_analysis()
@@ -1276,7 +1275,7 @@ class EmulatorBridge:
             self._reference_neural_by_class[cls] = []
             self._reference_penultimate_by_class[cls] = []
         self._reference_snapshot_ready = False
-        self._exploration_penultimate = []
+        self._exploration_penultimate = deque(maxlen=self.exploration_max_points)
         self._exploration_last_analysis = 0
         self._exploration_result = None
         self._last_viz_refit_sample = -1
