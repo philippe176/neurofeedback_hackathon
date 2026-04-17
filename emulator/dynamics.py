@@ -59,12 +59,13 @@ CLASS_CENTROIDS = np.array(
 )
 
 # Per-class optimal strategy positions — the four corners of [-1,1]²
+# Per-class optimal strategy positions — moved to the axes!
 OPTIMAL_STRATEGIES = np.array(
     [
-        [+0.2, +0.2],   # 0 — left_hand
-        [-0.2, +0.2],   # 1 — right_hand
-        [+0.2, -0.2],   # 2 — left_leg
-        [-0.2, -0.2],   # 3 — right_leg
+        [-0.3,  0.0],   # 0 — left_hand  (Left axis  -> Game Left)
+        [+0.3,  0.0],   # 1 — right_hand (Right axis -> Game Right)
+        [ 0.0, +0.3],   # 2 — left_leg   (Up axis    -> Game Up)
+        [ 0.0, -0.3],   # 3 — right_leg  (Down axis  -> Game Down)
     ],
     dtype=float,
 )
