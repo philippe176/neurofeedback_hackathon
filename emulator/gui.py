@@ -11,8 +11,6 @@ Controls
 """
 
 import sys
-import termios
-import tty
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -20,6 +18,13 @@ import numpy as np
 
 from .config import CLASS_COLORS, CLASS_NAMES, DIFFICULTIES
 from .emulator import BrainEmulator
+
+try:
+    import termios
+    import tty
+except ImportError:  # pragma: no cover - Windows compatibility
+    termios = None
+    tty = None
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +62,12 @@ def run_emulator_gui(
     root.title(f"Brain Emulator  [{difficulty.upper()}]")
     root.resizable(False, False)
     root.configure(bg="#0c0c14")
+
+    def on_close():
+        emulator.close()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
 
     W, H = 660, 540
     canvas = tk.Canvas(root, width=W, height=H, bg="#0c0c14", highlightthickness=0)
@@ -279,6 +290,10 @@ def run_emulator_gui(
     sample()
 
     # Suppress terminal echo so arrow/number keys don't print garbage
+    if termios is None or tty is None or not sys.stdin.isatty():
+        root.mainloop()
+        return
+
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:

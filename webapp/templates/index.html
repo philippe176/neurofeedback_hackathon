@@ -3,250 +3,345 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neurofeedback BCI - Live Visualization</title>
+    <title>Neurofeedback Decoder Lab</title>
     <link rel="stylesheet" href="/static/style.css">
     <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 <body>
-    <div class="app-container">
-        <!-- Header -->
+    <div class="app-shell">
         <header class="header">
-            <h1>Neurofeedback BCI</h1>
+            <div>
+                <p class="eyebrow">Neurofeedback Decoder Lab</p>
+                <h1>Teach the decoder to read the right strategy</h1>
+            </div>
             <div class="header-status">
-                <span id="connection-status" class="status-indicator disconnected">Disconnected</span>
-                <span id="sample-counter">Samples: 0</span>
+                <span id="connection-status" class="status-pill disconnected">Disconnected</span>
+                <span id="stream-status" class="status-pill waiting">Idle</span>
+                <span id="sample-counter" class="status-pill neutral">Samples: 0</span>
             </div>
         </header>
 
-        <!-- Main Content -->
-        <main class="main-content">
-            <!-- Left Panel: Controls -->
-            <aside class="control-panel">
-                <section class="control-section">
-                    <h2>Streaming</h2>
-                    <button id="btn-start" class="btn btn-primary btn-large">Start Streaming</button>
-                    <button id="btn-stop" class="btn btn-danger btn-large" disabled>Stop Streaming</button>
-                </section>
+        <section class="hero">
+            <div class="hero-copy">
+                <p>
+                    Run the emulator in a separate window, choose the intended task with <code>1-4</code>,
+                    and search with the arrow keys until the model reads the same task back.
+                </p>
+                <div class="instruction-strip">
+                    <span>1. Start <code>python -m emulator</code></span>
+                    <span>2. Click <strong>Start Listening</strong></span>
+                    <span>3. Move through the brain-zone map until prediction matches intention</span>
+                </div>
+            </div>
+            <div class="hero-actions">
+                <button id="btn-start" class="btn btn-primary">Start Listening</button>
+                <button id="btn-stop" class="btn btn-secondary" disabled>Stop Listening</button>
+                <button id="btn-reset" class="btn btn-ghost">Reset Decoder</button>
+            </div>
+        </section>
 
-                <section class="control-section">
-                    <h2>Auto-Tracking</h2>
-                    <p class="help-text">When enabled, the system automatically cycles through mental states with optimal strategy.</p>
-                    <button id="btn-tracking" class="btn btn-secondary">Enable Auto-Tracking</button>
-                    <div id="tracking-status" class="tracking-status">
-                        <span class="status-label">Status:</span>
-                        <span id="tracking-state" class="status-value">OFF</span>
+        <main class="main-layout">
+            <aside class="sidebar">
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Training Mode</h2>
+                        <p id="training-phase-description" class="panel-copy">
+                            Follow the requested task in the emulator, repeat it consistently, and build four clearly separated latent clusters.
+                        </p>
+                    </div>
+                    <div class="stack">
+                        <button class="btn btn-option btn-phase active" data-phase="calibration">
+                            <span class="option-title">Guided Calibration</span>
+                            <span class="option-copy">Build stable label separation from the incoming emulator stream.</span>
+                        </button>
+                        <button class="btn btn-option btn-phase" data-phase="feedback">
+                            <span class="option-title">Neurofeedback Coach</span>
+                            <span class="option-copy">Use the model readout to decide whether to keep or change strategy.</span>
+                        </button>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Active Mode</span>
+                        <span id="training-phase-name" class="metric-value">Guided Calibration</span>
                     </div>
                 </section>
 
-                <section class="control-section">
-                    <h2>Mental State Selection</h2>
-                    <p class="help-text">Click to simulate the corresponding mental state (imagined movement).</p>
-                    <div class="class-buttons">
-                        <button class="btn btn-class" data-class="0">
-                            <span class="class-icon">LH</span>
-                            <span class="class-name">Left Hand</span>
-                        </button>
-                        <button class="btn btn-class" data-class="1">
-                            <span class="class-icon">RH</span>
-                            <span class="class-name">Right Hand</span>
-                        </button>
-                        <button class="btn btn-class" data-class="2">
-                            <span class="class-icon">LL</span>
-                            <span class="class-name">Left Leg</span>
-                        </button>
-                        <button class="btn btn-class" data-class="3">
-                            <span class="class-icon">RL</span>
-                            <span class="class-name">Right Leg</span>
-                        </button>
-                        <button class="btn btn-class btn-rest" data-class="null">
-                            <span class="class-icon">--</span>
-                            <span class="class-name">Rest</span>
-                        </button>
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Emulator Stream</h2>
+                        <p id="stream-message" class="panel-copy">
+                            Click Start Listening, then start the emulator and interact with its window.
+                        </p>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Host</span>
+                        <span id="stream-host" class="metric-value">localhost</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Port</span>
+                        <span id="stream-port" class="metric-value">5555</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Difficulty</span>
+                        <span id="stream-difficulty" class="metric-value">Waiting for emulator</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Last Sample</span>
+                        <span id="stream-age" class="metric-value">--</span>
                     </div>
                 </section>
 
-                <section class="control-section">
-                    <h2>Centroid Window</h2>
-                    <p class="help-text">Number of recent samples used to compute cluster centroids.</p>
-                    <div class="slider-container">
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Decoder</h2>
+                        <p class="panel-copy">Switch the classifier or the 2D projector without changing the emulator stream.</p>
+                    </div>
+                    <div class="stack">
+                        <button class="btn btn-option btn-model active" data-model="dnn">
+                            <span class="option-title">DNN Decoder</span>
+                            <span class="option-copy">Fast dense baseline for online adaptation.</span>
+                        </button>
+                        <button class="btn btn-option btn-model" data-model="cnn">
+                            <span class="option-title">CNN Decoder</span>
+                            <span class="option-copy">Looks for local structure inside the feature vector.</span>
+                        </button>
+                        <button class="btn btn-option btn-model" data-model="cebra">
+                            <span class="option-title">CEBRA-Inspired Decoder</span>
+                            <span class="option-copy">Representation-focused model with class prototypes.</span>
+                        </button>
+                    </div>
+                    <div class="dual-metric">
+                        <div class="key-metric">
+                            <span class="metric-label">Model</span>
+                            <span id="active-model-name" class="metric-value">DNN Decoder</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Type</span>
+                            <span id="active-model-type" class="metric-value">dnn</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Brain-Zone View</h2>
+                        <p class="panel-copy">Choose how the latent trajectory is projected into the live zone map.</p>
+                    </div>
+                    <div class="stack">
+                        <button class="btn btn-option btn-viz active" data-viz="neural">
+                            <span class="option-title">Neural Projection</span>
+                            <span class="option-copy">Current projection head learned by the decoder.</span>
+                        </button>
+                        <button class="btn btn-option btn-viz" data-viz="pca">
+                            <span class="option-title">PCA Projection</span>
+                            <span class="option-copy">Linear projection on recent penultimate embeddings.</span>
+                        </button>
+                        <button class="btn btn-option btn-viz" data-viz="lda">
+                            <span class="option-title">LDA Projection</span>
+                            <span class="option-copy">Label-aware projection that pushes task zones apart.</span>
+                        </button>
+                        <button class="btn btn-option btn-viz" data-viz="tsne">
+                            <span class="option-title">t-SNE Projection</span>
+                            <span class="option-copy">Nonlinear local neighborhood view over the recent buffer.</span>
+                        </button>
+                    </div>
+                    <div class="dual-metric">
+                        <div class="key-metric">
+                            <span class="metric-label">View</span>
+                            <span id="active-viz-name" class="metric-value">Neural Projection</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Type</span>
+                            <span id="active-viz-type" class="metric-value">neural</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Centroid Window</h2>
+                        <p class="panel-copy">Recent samples used to compute zone centers and separation.</p>
+                    </div>
+                    <div class="slider-row">
                         <input type="range" id="centroid-slider" min="10" max="200" value="50" step="5">
                         <span id="centroid-value">50</span>
                     </div>
                 </section>
 
-                <section class="control-section">
-                    <h2>Current State</h2>
-                    <div class="state-display">
-                        <div class="state-row">
-                            <span class="state-label">Active Class:</span>
-                            <span id="current-class" class="state-value">Rest</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Prediction:</span>
-                            <span id="predicted-class" class="state-value">--</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Confidence:</span>
-                            <span id="confidence" class="state-value">--</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Class Scale:</span>
-                            <span id="class-scale" class="state-value">--</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Strategy Quality:</span>
-                            <span id="strategy-quality" class="state-value">--</span>
-                        </div>
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Save Snapshot</h2>
+                        <p class="panel-copy">Store the current decoder state and metadata for later comparison.</p>
                     </div>
-                </section>
-
-                <section class="control-section">
-                    <h2>Training Status</h2>
-                    <div class="state-display">
-                        <div class="state-row">
-                            <span class="state-label">Updates:</span>
-                            <span id="num-updates" class="state-value">0</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Labeled Seen:</span>
-                            <span id="labeled-seen" class="state-value">0</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Balanced Acc:</span>
-                            <span id="balanced-acc" class="state-value">--</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Macro F1:</span>
-                            <span id="macro-f1" class="state-value">--</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">RL Enabled:</span>
-                            <span id="rl-enabled" class="state-value">No</span>
-                        </div>
-                    </div>
+                    <label class="field-label" for="save-model-name">Checkpoint Name</label>
+                    <input id="save-model-name" class="text-input" type="text" value="dnn_neural_calibration">
+                    <button id="btn-save-model" class="btn btn-primary wide">Save Decoder Snapshot</button>
+                    <div id="save-model-status" class="helper-copy">Ready to save.</div>
                 </section>
             </aside>
 
-            <!-- Center: Visualizations -->
-            <div class="visualization-area">
-                <!-- Manifold Plot -->
-                <div class="viz-panel">
-                    <div class="viz-header">
-                        <h2 id="projection-title">Neural Projection</h2>
-                        <div class="viz-info">
-                            <span id="cluster-count">Clusters: 0/4</span>
+            <section class="content">
+                <div class="status-grid">
+                    <article class="signal-card">
+                        <span class="card-label">Task You Are Sending</span>
+                        <h3 id="intended-task" class="card-value">Waiting for stream</h3>
+                        <p id="intended-task-subtitle" class="card-copy">
+                            Choose a task in the emulator with 1-4.
+                        </p>
+                    </article>
+
+                    <article class="signal-card">
+                        <span class="card-label">What The Model Reads</span>
+                        <h3 id="predicted-task" class="card-value">Waiting</h3>
+                        <p id="predicted-task-subtitle" class="card-copy">
+                            The prediction will appear once live samples arrive.
+                        </p>
+                    </article>
+
+                    <article id="guidance-card" class="signal-card guidance-card hold">
+                        <span class="card-label">What To Do Now</span>
+                        <h3 id="guidance-headline" class="card-value">Start the stream</h3>
+                        <p id="guidance-message" class="card-copy">
+                            The app will tell you whether to keep or change strategy once the first labeled sample arrives.
+                        </p>
+                        <div class="mini-meta">
+                            <span id="guidance-score-label">Decoder Match</span>
+                            <span id="guidance-score">0%</span>
+                        </div>
+                    </article>
+
+                    <article class="signal-card">
+                        <span class="card-label">Current Brain Zone</span>
+                        <h3 id="zone-name" class="card-value">Waiting for stream</h3>
+                        <p id="zone-detail" class="card-copy">
+                            Your moving point on the map becomes the zone feedback.
+                        </p>
+                    </article>
+                </div>
+
+                <section class="panel chart-panel">
+                    <div class="panel-topline">
+                        <div>
+                            <p class="eyebrow">Latent Feedback</p>
+                            <h2 id="projection-title">Neural Projection</h2>
+                        </div>
+                        <div class="panel-stats">
+                            <span id="cluster-count">Zones: 0/4</span>
                             <span id="cluster-separation">MinSep: -- | MeanSep: -- | Spread: --</span>
                         </div>
                     </div>
-                    <div id="manifold-plot" class="plot-container"></div>
+                    <div id="manifold-plot" class="plot plot-large"></div>
+                </section>
+
+                <div class="chart-row">
+                    <section class="panel chart-panel">
+                        <div class="panel-topline compact-topline">
+                            <div>
+                                <p class="eyebrow">Immediate Readout</p>
+                                <h2>Class Probabilities</h2>
+                            </div>
+                        </div>
+                        <div id="probs-plot" class="plot plot-small"></div>
+                    </section>
+
+                    <section class="panel chart-panel">
+                        <div class="panel-topline compact-topline">
+                            <div>
+                                <p class="eyebrow">Learning Loop</p>
+                                <h2>Feedback Over Time</h2>
+                            </div>
+                        </div>
+                        <div id="metrics-plot" class="plot plot-small"></div>
+                    </section>
                 </div>
+            </section>
 
-                <!-- Bottom row: Probabilities and Metrics -->
-                <div class="viz-row">
-                    <!-- Probabilities -->
-                    <div class="viz-panel viz-half">
-                        <h2>Class Probabilities</h2>
-                        <div id="probs-plot" class="plot-container-small"></div>
+            <aside class="insights">
+                <section class="panel emphasis-panel">
+                    <div class="panel-header">
+                        <h2>Calibration Readiness</h2>
+                        <p id="calibration-message" class="panel-copy">
+                            Stable attempts from all four tasks will build clear zones here.
+                        </p>
                     </div>
-
-                    <!-- Metrics over time -->
-                    <div class="viz-panel viz-half">
-                        <h2>Training Progress</h2>
-                        <div id="metrics-plot" class="plot-container-small"></div>
+                    <div class="headline-row">
+                        <span id="calibration-state" class="big-chip neutral">Building Clusters</span>
+                        <span id="calibration-score" class="big-score">0%</span>
                     </div>
-                </div>
-            </div>
-
-            <!-- Right Panel: Model Selection -->
-            <aside class="model-panel">
-                <section class="control-section">
-                    <h2>Model Selection</h2>
-                    <p class="help-text">Choose which decoder is used for classification.</p>
-                    <div class="model-options">
-                        <button id="model-dnn" class="btn btn-model active" data-model="dnn">
-                            <span class="model-title">DNN Decoder</span>
-                            <span class="model-description">Dense neural network baseline for fast online adaptation.</span>
-                        </button>
-                        <button id="model-cnn" class="btn btn-model" data-model="cnn">
-                            <span class="model-title">CNN Decoder</span>
-                            <span class="model-description">1D convolutional encoder to capture local signal structure.</span>
-                        </button>
-                        <button id="model-cebra" class="btn btn-model" data-model="cebra">
-                            <span class="model-title">CEBRA-Inspired Decoder</span>
-                            <span class="model-description">Contrastive latent encoder with class-prototype decoding.</span>
-                        </button>
+                    <div class="progress-shell">
+                        <div id="calibration-progress-bar" class="progress-fill"></div>
+                    </div>
+                    <div class="quad-grid">
+                        <div class="count-chip"><span>LH</span><strong id="count-class-0">0</strong></div>
+                        <div class="count-chip"><span>RH</span><strong id="count-class-1">0</strong></div>
+                        <div class="count-chip"><span>LL</span><strong id="count-class-2">0</strong></div>
+                        <div class="count-chip"><span>RL</span><strong id="count-class-3">0</strong></div>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Label Separation</span>
+                        <span id="label-separation" class="metric-value">--</span>
                     </div>
                 </section>
 
-                <section class="control-section">
-                    <h2>Active Model</h2>
-                    <div class="state-display">
-                        <div class="state-row">
-                            <span class="state-label">Selected:</span>
-                            <span id="active-model-name" class="state-value">DNN Decoder</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Type:</span>
-                            <span id="active-model-type" class="state-value">dnn</span>
-                        </div>
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Signal Health</h2>
+                        <p class="panel-copy">These values tell you whether the strategy is stabilizing and whether the decoder is following it.</p>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Signal Score</span>
+                        <span id="signal-score" class="metric-value">--</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Class Scale</span>
+                        <span id="class-scale" class="metric-value">--</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Strategy Quality</span>
+                        <span id="strategy-quality" class="metric-value">--</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Recent Agreement</span>
+                        <span id="agreement-rate" class="metric-value">--</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Confidence</span>
+                        <span id="confidence" class="metric-value">--</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Rolling Reward</span>
+                        <span id="rolling-reward" class="metric-value">--</span>
                     </div>
                 </section>
 
-                <section class="control-section">
-                    <h2>Visualization Mode</h2>
-                    <p class="help-text">Choose how the same embedding space is projected for the live plot.</p>
-                    <div class="model-options">
-                        <button id="viz-neural" class="btn btn-model active btn-viz" data-viz="neural">
-                            <span class="model-title">Neural Projection</span>
-                            <span class="model-description">Current learned projection head from the decoder.</span>
-                        </button>
-                        <button id="viz-pca" class="btn btn-model btn-viz" data-viz="pca">
-                            <span class="model-title">PCA Projection</span>
-                            <span class="model-description">Linear projection from recent penultimate embeddings.</span>
-                        </button>
-                        <button id="viz-lda" class="btn btn-model btn-viz" data-viz="lda">
-                            <span class="model-title">LDA Projection</span>
-                            <span class="model-description">Label-aware projection emphasizing class separation.</span>
-                        </button>
-                        <button id="viz-tsne" class="btn btn-model btn-viz" data-viz="tsne">
-                            <span class="model-title">t-SNE Projection</span>
-                            <span class="model-description">Periodic cached nonlinear projection on a rolling buffer.</span>
-                        </button>
+                <section class="panel">
+                    <div class="panel-header">
+                        <h2>Training Status</h2>
+                        <p class="panel-copy">Low-level model metrics stay here so the main view can stay patient-facing.</p>
                     </div>
-                </section>
-
-                <section class="control-section">
-                    <h2>Active Visualization</h2>
-                    <div class="state-display">
-                        <div class="state-row">
-                            <span class="state-label">Selected:</span>
-                            <span id="active-viz-name" class="state-value">Neural Projection</span>
-                        </div>
-                        <div class="state-row">
-                            <span class="state-label">Type:</span>
-                            <span id="active-viz-type" class="state-value">neural</span>
-                        </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Updates</span>
+                        <span id="num-updates" class="metric-value">0</span>
                     </div>
-                </section>
-
-                <section class="control-section">
-                    <h2>Save Snapshot</h2>
-                    <p class="help-text">Save the current decoder state with a custom name or use the suggested one.</p>
-                    <div class="save-model-controls">
-                        <label class="input-label" for="save-model-name">Checkpoint Name</label>
-                        <input id="save-model-name" class="text-input" type="text" value="dnn_neural">
-                        <button id="btn-save-model" class="btn btn-primary btn-large">Save Model Snapshot</button>
-                        <div id="save-model-status" class="save-status">Ready to save.</div>
+                    <div class="key-metric">
+                        <span class="metric-label">Labeled Samples Seen</span>
+                        <span id="labeled-seen" class="metric-value">0</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Balanced Accuracy</span>
+                        <span id="balanced-acc" class="metric-value">--</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Macro F1</span>
+                        <span id="macro-f1" class="metric-value">--</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">RL Enabled</span>
+                        <span id="rl-enabled" class="metric-value">No</span>
                     </div>
                 </section>
             </aside>
         </main>
-
-        <!-- Footer -->
-        <footer class="footer">
-            <p>BCI Neurofeedback Hackathon - Real-time Movement Decoder</p>
-        </footer>
     </div>
 
     <script src="/static/main.js"></script>

@@ -1,21 +1,8 @@
-/**
- * Neurofeedback BCI - Web Application JavaScript
- *
- * Handles:
- * - WebSocket communication with the server
- * - Real-time visualization updates using Plotly
- * - User interface controls
- */
-
-// ========================================
-// Constants
-// ========================================
-
 const CLASS_COLORS = {
-    0: '#5c9fff',  // Left Hand - Blue
-    1: '#ffb347',  // Right Hand - Orange
-    2: '#77dd77',  // Left Leg - Green
-    3: '#ff6b6b',  // Right Leg - Coral
+    0: '#60a5fa',
+    1: '#f59e0b',
+    2: '#34d399',
+    3: '#f87171',
 };
 
 const CLASS_NAMES = {
@@ -25,37 +12,37 @@ const CLASS_NAMES = {
     3: 'Right Leg',
 };
 
-const THEME = {
-    bg_dark: '#0a0e1a',
-    bg_medium: '#111827',
-    bg_light: '#1e293b',
-    text_primary: '#f1f5f9',
-    text_secondary: '#94a3b8',
-    text_muted: '#64748b',
-    accent: '#3b82f6',
-    success: '#22c55e',
-    warning: '#f59e0b',
-    border: '#334155',
-};
+const ABBR = ['LH', 'RH', 'LL', 'RL'];
 
-// ========================================
-// State
-// ========================================
+const THEME = {
+    bg: '#0c1221',
+    panel: '#121a2d',
+    grid: '#243149',
+    text: '#e2e8f0',
+    muted: '#94a3b8',
+    accent: '#7dd3fc',
+    success: '#34d399',
+    warning: '#fbbf24',
+    danger: '#f87171',
+};
 
 let socket = null;
 let isStreaming = false;
-let currentClass = null;
-let autoTracking = false;
-let centroidWindow = 50;
+let isConnected = false;
+let trainingPhase = 'calibration';
+let trainingPhaseName = 'Guided Calibration';
+let trainingPhaseDescription = '';
 let currentModelType = 'dnn';
 let currentModelName = 'DNN Decoder';
 let currentVizMethod = 'neural';
 let currentVizName = 'Neural Projection';
+let centroidWindow = 50;
+let streamState = {};
+let calibrationState = {};
+let coachState = {};
+let sessionState = {};
+let latestData = null;
 let hasCustomSaveName = false;
-
-// ========================================
-// Initialization
-// ========================================
 
 document.addEventListener('DOMContentLoaded', () => {
     initializeSocket();
@@ -68,36 +55,40 @@ function initializeSocket() {
     socket = io();
 
     socket.on('connect', () => {
-        console.log('Connected to server');
-        updateConnectionStatus(true);
+        isConnected = true;
+        updateConnectionStatus();
     });
 
     socket.on('disconnect', () => {
-        console.log('Disconnected from server');
-        updateConnectionStatus(false);
+        isConnected = false;
+        updateConnectionStatus();
     });
 
-    socket.on('update', (data) => {
-        handleUpdate(data);
-    });
-
-    socket.on('streaming_status', (data) => {
-        isStreaming = data.streaming;
+    socket.on('status', (data) => {
+        if (typeof data.streaming === 'boolean') {
+            isStreaming = data.streaming;
+        }
+        if (data.stream) {
+            streamState = data.stream;
+        }
+        updateHeaderStatus();
+        updateStreamPanel();
         updateStreamingButtons();
     });
 
-    socket.on('class_changed', (data) => {
-        currentClass = data.class_idx;
-        updateClassButtons();
+    socket.on('streaming_status', (data) => {
+        isStreaming = !!data.streaming;
+        if (data.stream) {
+            streamState = data.stream;
+        }
+        updateHeaderStatus();
+        updateStreamPanel();
+        updateStreamingButtons();
     });
 
-    socket.on('tracking_changed', (data) => {
-        autoTracking = data.auto_tracking;
-        updateTrackingButton();
-    });
-
-    socket.on('error', (data) => {
-        console.error('Server error:', data.message);
+    socket.on('training_phase_changed', (data) => {
+        syncTrainingState(data);
+        renderPanels();
     });
 
     socket.on('model_changed', (data) => {
@@ -111,92 +102,28 @@ function initializeSocket() {
         currentVizName = data.viz_name;
         updateVisualizationSelection();
     });
-}
 
-function initializePlots() {
-    // Initialize manifold plot
-    const manifoldLayout = {
-        paper_bgcolor: THEME.bg_medium,
-        plot_bgcolor: THEME.bg_medium,
-        font: { color: THEME.text_secondary },
-        margin: { t: 20, r: 20, b: 40, l: 50 },
-        xaxis: {
-            title: 'Projection X',
-            gridcolor: THEME.border,
-            zerolinecolor: THEME.border,
-        },
-        yaxis: {
-            title: 'Projection Y',
-            gridcolor: THEME.border,
-            zerolinecolor: THEME.border,
-        },
-        showlegend: true,
-        legend: {
-            x: 1,
-            y: 1,
-            xanchor: 'right',
-            bgcolor: 'rgba(0,0,0,0.5)',
-        },
-    };
-
-    Plotly.newPlot('manifold-plot', [], manifoldLayout, {
-        responsive: true,
-        displayModeBar: false,
+    socket.on('centroid_window_changed', (data) => {
+        centroidWindow = data.window;
+        updateCentroidSlider();
     });
 
-    // Initialize probability bar chart
-    const probsLayout = {
-        paper_bgcolor: THEME.bg_medium,
-        plot_bgcolor: THEME.bg_medium,
-        font: { color: THEME.text_secondary },
-        margin: { t: 10, r: 20, b: 40, l: 40 },
-        xaxis: {
-            ticktext: ['LH', 'RH', 'LL', 'RL'],
-            tickvals: [0, 1, 2, 3],
-        },
-        yaxis: {
-            range: [0, 1.1],
-            gridcolor: THEME.border,
-        },
-        bargap: 0.3,
-    };
-
-    Plotly.newPlot('probs-plot', [], probsLayout, {
-        responsive: true,
-        displayModeBar: false,
+    socket.on('update', (data) => {
+        latestData = data;
+        syncRuntimeState(data);
+        renderAll();
     });
 
-    // Initialize metrics plot
-    const metricsLayout = {
-        paper_bgcolor: THEME.bg_medium,
-        plot_bgcolor: THEME.bg_medium,
-        font: { color: THEME.text_secondary },
-        margin: { t: 10, r: 20, b: 40, l: 50 },
-        xaxis: {
-            title: 'Sample',
-            gridcolor: THEME.border,
-        },
-        yaxis: {
-            range: [0, 1.1],
-            gridcolor: THEME.border,
-        },
-        showlegend: true,
-        legend: {
-            x: 1,
-            y: 1,
-            xanchor: 'right',
-            bgcolor: 'rgba(0,0,0,0.5)',
-        },
-    };
-
-    Plotly.newPlot('metrics-plot', [], metricsLayout, {
-        responsive: true,
-        displayModeBar: false,
+    socket.on('error', (data) => {
+        console.error(data.message);
+        const message = data.message || 'Unknown server error';
+        document.getElementById('stream-message').textContent = message;
+        document.getElementById('save-model-status').textContent = message;
+        document.getElementById('save-model-status').className = 'helper-copy error';
     });
 }
 
 function initializeControls() {
-    // Start/Stop buttons
     document.getElementById('btn-start').addEventListener('click', () => {
         socket.emit('start_streaming');
     });
@@ -205,38 +132,20 @@ function initializeControls() {
         socket.emit('stop_streaming');
     });
 
-    // Auto-tracking button
-    document.getElementById('btn-tracking').addEventListener('click', () => {
-        socket.emit('toggle_tracking');
-    });
+    document.getElementById('btn-reset').addEventListener('click', resetDecoder);
 
-    // Class selection buttons
-    document.querySelectorAll('.btn-class').forEach(btn => {
+    document.querySelectorAll('.btn-phase').forEach((btn) => {
         btn.addEventListener('click', () => {
-            const classIdx = btn.dataset.class;
-            const value = classIdx === 'null' ? null : parseInt(classIdx);
-            socket.emit('set_class', { class_idx: value });
+            const nextPhase = btn.dataset.phase;
+            if (nextPhase === trainingPhase) {
+                return;
+            }
+            socket.emit('set_training_phase', { training_phase: nextPhase });
         });
     });
 
-    // Centroid window slider
-    const slider = document.getElementById('centroid-slider');
-    const sliderValue = document.getElementById('centroid-value');
-
-    slider.addEventListener('input', () => {
-        sliderValue.textContent = slider.value;
-    });
-
-    slider.addEventListener('change', () => {
-        centroidWindow = parseInt(slider.value);
-        socket.emit('set_centroid_window', { window: centroidWindow });
-    });
-
-    document.querySelectorAll('.btn-model').forEach(btn => {
+    document.querySelectorAll('.btn-model').forEach((btn) => {
         btn.addEventListener('click', () => {
-            if (btn.dataset.viz) {
-                return;
-            }
             const modelType = btn.dataset.model;
             if (modelType === currentModelType) {
                 return;
@@ -245,7 +154,7 @@ function initializeControls() {
         });
     });
 
-    document.querySelectorAll('.btn-viz').forEach(btn => {
+    document.querySelectorAll('.btn-viz').forEach((btn) => {
         btn.addEventListener('click', () => {
             const vizMethod = btn.dataset.viz;
             if (vizMethod === currentVizMethod) {
@@ -253,6 +162,15 @@ function initializeControls() {
             }
             socket.emit('set_viz_method', { viz_method: vizMethod });
         });
+    });
+
+    const slider = document.getElementById('centroid-slider');
+    slider.addEventListener('input', () => {
+        centroidWindow = parseInt(slider.value, 10);
+        updateCentroidSlider();
+    });
+    slider.addEventListener('change', () => {
+        socket.emit('set_centroid_window', { window: centroidWindow });
     });
 
     const saveInput = document.getElementById('save-model-name');
@@ -263,77 +181,113 @@ function initializeControls() {
     document.getElementById('btn-save-model').addEventListener('click', saveModelSnapshot);
 }
 
+function initializePlots() {
+    Plotly.newPlot('manifold-plot', [], manifoldLayout(), plotConfig());
+    Plotly.newPlot('probs-plot', [], probsLayout(), plotConfig());
+    Plotly.newPlot('metrics-plot', [], metricsLayout(), plotConfig());
+}
+
 async function loadInitialStatus() {
     try {
         const response = await fetch('/api/status');
         const data = await response.json();
-
-        isStreaming = data.streaming;
-        currentClass = data.current_class;
-        autoTracking = data.auto_tracking;
-        currentModelType = data.model_type || 'dnn';
-        currentModelName = data.model_name || 'DNN Decoder';
-        currentVizMethod = data.viz_method || 'neural';
-        currentVizName = data.viz_name || 'Neural Projection';
-
+        isStreaming = !!data.streaming;
+        syncRuntimeState(data);
+        renderPanels();
         updateStreamingButtons();
-        updateClassButtons();
-        updateTrackingButton();
-        updateModelSelection();
-        updateVisualizationSelection();
-        ensureDefaultSaveName();
+        ensureDefaultSaveName(true);
         updateSampleCounter(data.sample_count || 0);
     } catch (error) {
         console.error('Failed to load initial status:', error);
     }
 }
 
-// ========================================
-// Update Handlers
-// ========================================
-
-function handleUpdate(data) {
-    updateSampleCounter(data.sample_idx);
-    updateStateDisplay(data);
-    updateManifoldPlot(data);
-    updateProbabilitiesPlot(data);
-    updateMetricsPlot(data);
-    updateClusterInfo(data);
-    updateTrainingStatus(data);
-
-    // Update current class from server
-    if (data.current_class !== currentClass) {
-        currentClass = data.current_class;
-        updateClassButtons();
+function syncRuntimeState(data) {
+    if (typeof data.streaming === 'boolean') {
+        isStreaming = data.streaming;
     }
-
-    if (data.auto_tracking !== autoTracking) {
-        autoTracking = data.auto_tracking;
-        updateTrackingButton();
+    if (data.stream) {
+        streamState = data.stream;
     }
-
-    if (data.model_type && data.model_type !== currentModelType) {
+    syncTrainingState(data);
+    if (data.model_type) {
         currentModelType = data.model_type;
-        currentModelName = data.model_name || currentModelName;
-        updateModelSelection();
     }
-
-    if (data.viz_method && data.viz_method !== currentVizMethod) {
+    if (data.model_name) {
+        currentModelName = data.model_name;
+    }
+    if (data.viz_method) {
         currentVizMethod = data.viz_method;
-        currentVizName = data.viz_name || currentVizName;
-        updateVisualizationSelection();
+    }
+    if (data.viz_name) {
+        currentVizName = data.viz_name;
+    }
+    if (data.centroid_window) {
+        centroidWindow = data.centroid_window;
     }
 }
 
-function updateConnectionStatus(connected) {
-    const elem = document.getElementById('connection-status');
-    if (connected) {
-        elem.textContent = 'Connected';
-        elem.className = 'status-indicator connected';
-    } else {
-        elem.textContent = 'Disconnected';
-        elem.className = 'status-indicator disconnected';
+function syncTrainingState(data) {
+    if (data.training_phase) {
+        trainingPhase = data.training_phase;
     }
+    if (data.training_phase_name) {
+        trainingPhaseName = data.training_phase_name;
+    }
+    if (data.training_phase_description) {
+        trainingPhaseDescription = data.training_phase_description;
+    }
+    if (data.calibration) {
+        calibrationState = data.calibration;
+    }
+    if (data.coach) {
+        coachState = data.coach;
+    }
+    if (data.session) {
+        sessionState = data.session;
+    }
+}
+
+function renderAll() {
+    updateHeaderStatus();
+    updateStreamingButtons();
+    updateSampleCounter(latestData.sample_idx || 0);
+    renderPanels();
+    updateManifoldPlot(latestData);
+    updateProbabilitiesPlot(latestData);
+    updateMetricsPlot(latestData);
+}
+
+function renderPanels() {
+    updateConnectionStatus();
+    updateHeaderStatus();
+    updateTrainingPhaseSelection();
+    updateStreamPanel();
+    updateModelSelection();
+    updateVisualizationSelection();
+    updateCentroidSlider();
+    updateStatusCards();
+    updateCalibrationPanel();
+    updateSignalPanel();
+    updateTrainingPanel();
+}
+
+function updateConnectionStatus() {
+    const elem = document.getElementById('connection-status');
+    if (isConnected) {
+        elem.textContent = 'Browser Connected';
+        elem.className = 'status-pill connected';
+    } else {
+        elem.textContent = 'Browser Disconnected';
+        elem.className = 'status-pill disconnected';
+    }
+}
+
+function updateHeaderStatus() {
+    const elem = document.getElementById('stream-status');
+    const state = streamState.state || 'idle';
+    elem.textContent = labelForStreamState(state);
+    elem.className = `status-pill ${state}`;
 }
 
 function updateStreamingButtons() {
@@ -345,91 +299,174 @@ function updateSampleCounter(count) {
     document.getElementById('sample-counter').textContent = `Samples: ${count}`;
 }
 
-function updateStateDisplay(data) {
-    document.getElementById('current-class').textContent = data.current_class_name;
-    document.getElementById('predicted-class').textContent = data.predicted_class_name;
-    document.getElementById('confidence').textContent = `${(data.confidence * 100).toFixed(1)}%`;
-    document.getElementById('class-scale').textContent = data.class_scale.toFixed(2);
-    document.getElementById('strategy-quality').textContent = data.strategy_quality.toFixed(2);
-}
-
-function updateTrainingStatus(data) {
-    const training = data.training;
-    document.getElementById('num-updates').textContent = training.num_updates;
-    document.getElementById('labeled-seen').textContent = training.labeled_seen;
-    document.getElementById('balanced-acc').textContent =
-        training.balanced_accuracy !== null ? `${(training.balanced_accuracy * 100).toFixed(1)}%` : '--';
-    document.getElementById('macro-f1').textContent =
-        training.macro_f1 !== null ? `${(training.macro_f1 * 100).toFixed(1)}%` : '--';
-    document.getElementById('rl-enabled').textContent = training.rl_enabled ? 'Yes' : 'No';
-}
-
-function updateClassButtons() {
-    document.querySelectorAll('.btn-class').forEach(btn => {
-        const classIdx = btn.dataset.class;
-        const value = classIdx === 'null' ? null : parseInt(classIdx);
-        btn.classList.toggle('active', value === currentClass);
+function updateTrainingPhaseSelection() {
+    document.querySelectorAll('.btn-phase').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.phase === trainingPhase);
     });
+    document.getElementById('training-phase-name').textContent = trainingPhaseName;
+    document.getElementById('training-phase-description').textContent = trainingPhaseDescription;
+    ensureDefaultSaveName();
 }
 
-function updateTrackingButton() {
-    const btn = document.getElementById('btn-tracking');
-    const state = document.getElementById('tracking-state');
+function updateStreamPanel() {
+    document.getElementById('stream-host').textContent = streamState.host || 'localhost';
+    document.getElementById('stream-port').textContent = streamState.port || '5555';
+    document.getElementById('stream-message').textContent = streamState.message || 'Waiting for stream.';
+    document.getElementById('stream-age').textContent = formatAge(streamState.last_sample_age_s);
 
-    if (autoTracking) {
-        btn.textContent = 'Disable Auto-Tracking';
-        btn.classList.add('active');
-        state.textContent = 'ON';
-        state.classList.add('on');
+    if (latestData && latestData.difficulty_name) {
+        document.getElementById('stream-difficulty').textContent = latestData.difficulty_name;
     } else {
-        btn.textContent = 'Enable Auto-Tracking';
-        btn.classList.remove('active');
-        state.textContent = 'OFF';
-        state.classList.remove('on');
+        document.getElementById('stream-difficulty').textContent = 'Waiting for emulator';
     }
 }
 
 function updateModelSelection() {
-    document.querySelectorAll('.btn-model[data-model]').forEach(btn => {
+    document.querySelectorAll('.btn-model').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.model === currentModelType);
     });
-
     document.getElementById('active-model-name').textContent = currentModelName;
     document.getElementById('active-model-type').textContent = currentModelType;
     ensureDefaultSaveName();
 }
 
 function updateVisualizationSelection() {
-    document.querySelectorAll('.btn-viz').forEach(btn => {
+    document.querySelectorAll('.btn-viz').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.viz === currentVizMethod);
     });
-
     document.getElementById('active-viz-name').textContent = currentVizName;
     document.getElementById('active-viz-type').textContent = currentVizMethod;
     document.getElementById('projection-title').textContent = currentVizName;
     ensureDefaultSaveName();
 }
 
-function updateClusterInfo(data) {
-    const numCentroids = Object.keys(data.centroids).length;
-    document.getElementById('cluster-count').textContent = `Clusters: ${numCentroids}/4`;
+function updateCentroidSlider() {
+    document.getElementById('centroid-slider').value = centroidWindow;
+    document.getElementById('centroid-value').textContent = `${centroidWindow}`;
+}
 
-    const minSep = data.min_separation.toFixed(2);
-    const meanSep = data.mean_separation.toFixed(2);
-    const meanSpread = data.mean_spread.toFixed(2);
-    document.getElementById('cluster-separation').textContent = `MinSep: ${minSep} | MeanSep: ${meanSep} | Spread: ${meanSpread}`;
+function updateStatusCards() {
+    const data = latestData || {};
+    const currentName = data.current_class_name || 'Waiting for stream';
+    const predictedName = data.predicted_class_name || 'Waiting';
+    const hasLabel = data.current_class !== undefined && data.current_class !== null;
+
+    document.getElementById('intended-task').textContent = hasLabel ? currentName : 'Pick a task';
+    document.getElementById('intended-task-subtitle').textContent = hasLabel
+        ? 'Chosen in the emulator with 1-4. Keep using arrows until the model follows it.'
+        : 'Use 1-4 in the emulator to declare the task you want to train.';
+
+    document.getElementById('predicted-task').textContent = predictedName;
+    if (!latestData || latestData.predicted_class === null || latestData.predicted_class === undefined) {
+        document.getElementById('predicted-task-subtitle').textContent = 'The prediction will appear as soon as live samples arrive.';
+    } else if (hasLabel && latestData.predicted_class === latestData.current_class) {
+        document.getElementById('predicted-task-subtitle').textContent = 'The decoder agrees with your intended task.';
+    } else if (hasLabel) {
+        document.getElementById('predicted-task-subtitle').textContent = 'If this is not the task you want, change strategy until the readout moves.';
+    } else {
+        document.getElementById('predicted-task-subtitle').textContent = 'Prediction is live, but the current sample does not carry a task label.';
+    }
+
+    const guidanceCard = document.getElementById('guidance-card');
+    const guidanceState = coachState.state || 'hold';
+    guidanceCard.className = `signal-card guidance-card ${guidanceState}`;
+    document.getElementById('guidance-headline').textContent = coachState.headline || 'Waiting for stream';
+    document.getElementById('guidance-message').textContent = coachState.message || 'Start the emulator to receive feedback.';
+    document.getElementById('guidance-score-label').textContent = coachState.score_label || 'Decoder Match';
+    document.getElementById('guidance-score').textContent = typeof coachState.score === 'number'
+        ? `${(coachState.score * 100).toFixed(0)}%`
+        : '--';
+
+    const zone = data.zone || {};
+    document.getElementById('zone-name').textContent = zone.class_name || 'Waiting for stream';
+    if (zone.source === 'centroid' && typeof zone.distance === 'number') {
+        document.getElementById('zone-detail').textContent = `Closest learned zone. Distance ${zone.distance.toFixed(2)} from the current point.`;
+    } else if (zone.source === 'prediction') {
+        document.getElementById('zone-detail').textContent = 'Still estimating zones. Showing the model prediction instead.';
+    } else {
+        document.getElementById('zone-detail').textContent = 'The moving point on the map will become your zone feedback.';
+    }
+}
+
+function updateCalibrationPanel() {
+    const readiness = calibrationState.readiness || 0;
+    document.getElementById('calibration-state').textContent = calibrationState.ready ? 'Ready For Feedback' : 'Building Clusters';
+    document.getElementById('calibration-state').className = `big-chip ${calibrationState.ready ? 'ready' : 'neutral'}`;
+    document.getElementById('calibration-score').textContent = `${(readiness * 100).toFixed(0)}%`;
+    document.getElementById('calibration-progress-bar').style.width = `${Math.max(0, Math.min(100, readiness * 100))}%`;
+    document.getElementById('calibration-message').textContent = calibrationState.message || 'Stable attempts from all four tasks will build clear zones here.';
+
+    const counts = calibrationState.label_counts || {};
+    for (let cls = 0; cls < 4; cls += 1) {
+        document.getElementById(`count-class-${cls}`).textContent = counts[String(cls)] ?? 0;
+    }
+
+    if (typeof calibrationState.mean_label_separation === 'number') {
+        const minSep = typeof calibrationState.min_label_separation === 'number'
+            ? calibrationState.min_label_separation.toFixed(2)
+            : '--';
+        const meanSep = calibrationState.mean_label_separation.toFixed(2);
+        document.getElementById('label-separation').textContent = `Min ${minSep} | Mean ${meanSep}`;
+    } else {
+        document.getElementById('label-separation').textContent = '--';
+    }
+}
+
+function updateSignalPanel() {
+    const data = latestData || {};
+    document.getElementById('signal-score').textContent = typeof data.signal_score === 'number'
+        ? `${(data.signal_score * 100).toFixed(0)}%`
+        : '--';
+    document.getElementById('class-scale').textContent = typeof data.class_scale === 'number'
+        ? data.class_scale.toFixed(2)
+        : '--';
+    document.getElementById('strategy-quality').textContent = typeof data.strategy_quality === 'number'
+        ? data.strategy_quality.toFixed(2)
+        : '--';
+    document.getElementById('agreement-rate').textContent = typeof sessionState.rolling_alignment === 'number'
+        ? `${(sessionState.rolling_alignment * 100).toFixed(0)}%`
+        : '--';
+    document.getElementById('confidence').textContent = typeof data.confidence === 'number'
+        ? `${(data.confidence * 100).toFixed(1)}%`
+        : '--';
+    document.getElementById('rolling-reward').textContent = typeof sessionState.rolling_reward === 'number'
+        ? `${(sessionState.rolling_reward * 100).toFixed(0)}%`
+        : '--';
+}
+
+function updateTrainingPanel() {
+    const training = latestData && latestData.training ? latestData.training : {};
+    document.getElementById('num-updates').textContent = training.num_updates ?? 0;
+    document.getElementById('labeled-seen').textContent = training.labeled_seen ?? 0;
+    document.getElementById('balanced-acc').textContent =
+        typeof training.balanced_accuracy === 'number' ? `${(training.balanced_accuracy * 100).toFixed(1)}%` : '--';
+    document.getElementById('macro-f1').textContent =
+        typeof training.macro_f1 === 'number' ? `${(training.macro_f1 * 100).toFixed(1)}%` : '--';
+    document.getElementById('rl-enabled').textContent = training.rl_enabled ? 'Yes' : 'No';
+}
+
+async function resetDecoder() {
+    try {
+        await fetch('/api/reset', { method: 'POST' });
+        latestData = null;
+        calibrationState = {};
+        coachState = {};
+        sessionState = {};
+        await loadInitialStatus();
+        Plotly.react('manifold-plot', [], manifoldLayout(), plotConfig());
+        Plotly.react('probs-plot', [], probsLayout(), plotConfig());
+        Plotly.react('metrics-plot', [], metricsLayout(), plotConfig());
+    } catch (error) {
+        console.error('Failed to reset decoder:', error);
+    }
 }
 
 function buildDefaultSaveName() {
-    return `${currentModelType}_${currentVizMethod}`;
+    return `${currentModelType}_${currentVizMethod}_${trainingPhase}`;
 }
 
 function ensureDefaultSaveName(force = false) {
     const input = document.getElementById('save-model-name');
-    if (!input) {
-        return;
-    }
-
     if (force || !hasCustomSaveName || input.value.trim() === '') {
         input.value = buildDefaultSaveName();
         hasCustomSaveName = false;
@@ -439,7 +476,7 @@ function ensureDefaultSaveName(force = false) {
 function setSaveStatus(message, kind = '') {
     const elem = document.getElementById('save-model-status');
     elem.textContent = message;
-    elem.className = `save-status${kind ? ` ${kind}` : ''}`;
+    elem.className = `helper-copy${kind ? ` ${kind}` : ''}`;
 }
 
 async function saveModelSnapshot() {
@@ -453,9 +490,7 @@ async function saveModelSnapshot() {
     try {
         const response = await fetch('/api/save_model', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name }),
         });
         const data = await response.json();
@@ -466,243 +501,299 @@ async function saveModelSnapshot() {
         hasCustomSaveName = false;
         setSaveStatus(`Saved as ${data.filename}`, 'success');
     } catch (error) {
-        console.error('Failed to save model snapshot:', error);
+        console.error(error);
         setSaveStatus(error.message || 'Failed to save model snapshot', 'error');
     } finally {
         button.disabled = false;
     }
 }
 
-// ========================================
-// Plotting Functions
-// ========================================
-
 function updateManifoldPlot(data) {
-    const points = data.points;
-    const predictions = data.predictions;
-    const centroids = data.centroids;
-
-    if (points.length === 0) return;
-
-    // Use only recent points based on centroid window
-    const windowSize = Math.min(data.centroid_window, points.length);
-    const recentPoints = points.slice(-windowSize);
-    const recentPreds = predictions.slice(-windowSize);
-
-    // Separate points by class
-    const traces = [];
-
-    // Add scatter points for each class
-    for (let cls = 0; cls < 4; cls++) {
-        const classPoints = [];
-        const alphas = [];
-
-        for (let i = 0; i < recentPoints.length; i++) {
-            if (recentPreds[i] === cls) {
-                classPoints.push(recentPoints[i]);
-                // Fade older points
-                alphas.push(0.3 + 0.7 * (i / recentPoints.length));
-            }
-        }
-
-        if (classPoints.length > 0) {
-            traces.push({
-                x: classPoints.map(p => p[0]),
-                y: classPoints.map(p => p[1]),
-                mode: 'markers',
-                type: 'scatter',
-                name: CLASS_NAMES[cls],
-                marker: {
-                    color: CLASS_COLORS[cls],
-                    size: 8,
-                    opacity: alphas,
-                },
-                showlegend: true,
-            });
-        }
+    const points = data.points || [];
+    if (!points.length) {
+        Plotly.react('manifold-plot', [], manifoldLayout(), plotConfig());
+        document.getElementById('cluster-count').textContent = 'Zones: 0/4';
+        document.getElementById('cluster-separation').textContent = 'MinSep: -- | MeanSep: -- | Spread: --';
+        return;
     }
 
-    // Add centroids
-    for (const [cls, centroid] of Object.entries(centroids)) {
-        const classIdx = parseInt(cls);
+    const labels = (data.labels || []).slice(-points.length).map((label, index) => {
+        if (label === null || label === undefined) {
+            return data.predictions[index];
+        }
+        return label;
+    });
+    const recentCount = Math.min(data.centroid_window || centroidWindow, points.length);
+    const recentPoints = points.slice(-recentCount);
+    const recentLabels = labels.slice(-recentCount);
+    const traces = [];
+
+    for (let cls = 0; cls < 4; cls += 1) {
+        const classPoints = recentPoints.filter((_, idx) => recentLabels[idx] === cls);
+        if (!classPoints.length) {
+            continue;
+        }
+        traces.push({
+            x: classPoints.map((point) => point[0]),
+            y: classPoints.map((point) => point[1]),
+            mode: 'markers',
+            type: 'scatter',
+            name: CLASS_NAMES[cls],
+            marker: {
+                color: CLASS_COLORS[cls],
+                size: 9,
+                opacity: 0.72,
+            },
+        });
+    }
+
+    const trajectory = recentPoints.slice(-24);
+    traces.push({
+        x: trajectory.map((point) => point[0]),
+        y: trajectory.map((point) => point[1]),
+        mode: 'lines',
+        type: 'scatter',
+        name: 'Trajectory',
+        line: {
+            color: 'rgba(226, 232, 240, 0.45)',
+            width: 3,
+        },
+        showlegend: false,
+    });
+
+    const centroids = data.centroids || {};
+    Object.entries(centroids).forEach(([cls, centroid]) => {
+        const idx = parseInt(cls, 10);
         traces.push({
             x: [centroid[0]],
             y: [centroid[1]],
             mode: 'markers+text',
             type: 'scatter',
-            name: `${CLASS_NAMES[classIdx]} Centroid`,
-            text: ['LH', 'RH', 'LL', 'RL'][classIdx],
+            text: [ABBR[idx]],
             textposition: 'top center',
             textfont: {
-                color: CLASS_COLORS[classIdx],
+                color: CLASS_COLORS[idx],
                 size: 12,
-                family: 'Arial Black',
+                family: 'Trebuchet MS, sans-serif',
             },
             marker: {
-                color: CLASS_COLORS[classIdx],
+                color: CLASS_COLORS[idx],
                 size: 20,
-                symbol: 'circle',
                 line: {
-                    color: 'white',
+                    color: '#f8fafc',
                     width: 2,
                 },
             },
+            name: `${CLASS_NAMES[idx]} Center`,
             showlegend: false,
         });
-    }
+    });
 
-    // Add current point highlight
     const currentPoint = points[points.length - 1];
     traces.push({
         x: [currentPoint[0]],
         y: [currentPoint[1]],
         mode: 'markers',
         type: 'scatter',
-        name: 'Current',
         marker: {
-            color: 'white',
-            size: 14,
-            symbol: 'circle',
+            color: '#f8fafc',
+            size: 16,
             line: {
                 color: THEME.accent,
-                width: 3,
+                width: 4,
             },
         },
+        name: 'Current',
         showlegend: false,
     });
 
-    Plotly.react('manifold-plot', traces, {
-        paper_bgcolor: THEME.bg_medium,
-        plot_bgcolor: THEME.bg_medium,
-        font: { color: THEME.text_secondary },
-        margin: { t: 20, r: 20, b: 40, l: 50 },
-        xaxis: {
-            title: 'Projection X',
-            gridcolor: THEME.border,
-            zerolinecolor: THEME.border,
-        },
-        yaxis: {
-            title: 'Projection Y',
-            gridcolor: THEME.border,
-            zerolinecolor: THEME.border,
-        },
-        showlegend: true,
-        legend: {
-            x: 1,
-            y: 1,
-            xanchor: 'right',
-            bgcolor: 'rgba(0,0,0,0.5)',
-        },
-    });
+    Plotly.react('manifold-plot', traces, manifoldLayout(), plotConfig());
+
+    document.getElementById('cluster-count').textContent = `Zones: ${Object.keys(centroids).length}/4`;
+    document.getElementById('cluster-separation').textContent =
+        `MinSep: ${formatFixed(data.min_separation)} | MeanSep: ${formatFixed(data.mean_separation)} | Spread: ${formatFixed(data.mean_spread)}`;
 }
 
 function updateProbabilitiesPlot(data) {
-    const probs = data.probabilities;
+    const probs = data.probabilities || [];
+    if (!probs.length) {
+        Plotly.react('probs-plot', [], probsLayout(), plotConfig());
+        return;
+    }
+
     const predicted = data.predicted_class;
+    const intended = data.current_class;
 
-    const colors = probs.map((_, i) =>
-        i === predicted ? CLASS_COLORS[i] : CLASS_COLORS[i] + '80'
-    );
-
-    const trace = {
+    Plotly.react('probs-plot', [{
         x: [0, 1, 2, 3],
         y: probs,
         type: 'bar',
         marker: {
-            color: colors,
+            color: probs.map((_, idx) => (idx === predicted ? CLASS_COLORS[idx] : `${CLASS_COLORS[idx]}80`)),
             line: {
-                color: probs.map((_, i) => i === predicted ? 'white' : 'transparent'),
-                width: probs.map((_, i) => i === predicted ? 2 : 0),
+                color: probs.map((_, idx) => {
+                    if (idx === intended) {
+                        return '#f8fafc';
+                    }
+                    return idx === predicted ? '#dbeafe' : 'transparent';
+                }),
+                width: probs.map((_, idx) => (idx === intended ? 3 : (idx === predicted ? 1.5 : 0))),
             },
         },
-        text: probs.map(p => `${(p * 100).toFixed(0)}%`),
+        text: probs.map((value) => `${(value * 100).toFixed(0)}%`),
         textposition: 'outside',
-        textfont: {
-            color: THEME.text_primary,
+        textfont: { color: THEME.text },
+    }], probsLayout(), plotConfig());
+}
+
+function updateMetricsPlot(data) {
+    const confidences = data.confidences || [];
+    const rewards = data.rewards || [];
+    const agreements = data.agreements || [];
+    if (!confidences.length) {
+        Plotly.react('metrics-plot', [], metricsLayout(), plotConfig());
+        return;
+    }
+
+    const x = Array.from({ length: confidences.length }, (_, idx) => idx + 1);
+    const traces = [
+        {
+            x,
+            y: smoothSeries(agreements, 10),
+            type: 'scatter',
+            mode: 'lines',
+            name: 'Agreement',
+            line: { color: THEME.success, width: 3 },
+        },
+        {
+            x,
+            y: smoothSeries(confidences, 10),
+            type: 'scatter',
+            mode: 'lines',
+            name: 'Confidence',
+            line: { color: THEME.accent, width: 2.5 },
+        },
+        {
+            x,
+            y: smoothSeries(rewards, 10),
+            type: 'scatter',
+            mode: 'lines',
+            name: 'Reward',
+            line: { color: THEME.warning, width: 2.5, dash: 'dot' },
+        },
+    ];
+
+    Plotly.react('metrics-plot', traces, metricsLayout(), plotConfig());
+}
+
+function manifoldLayout() {
+    return {
+        paper_bgcolor: THEME.panel,
+        plot_bgcolor: THEME.panel,
+        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        margin: { t: 24, r: 20, b: 48, l: 52 },
+        xaxis: {
+            title: 'Latent Zone X',
+            gridcolor: THEME.grid,
+            zerolinecolor: THEME.grid,
+        },
+        yaxis: {
+            title: 'Latent Zone Y',
+            gridcolor: THEME.grid,
+            zerolinecolor: THEME.grid,
+        },
+        legend: {
+            orientation: 'h',
+            y: 1.12,
+            x: 0,
+            bgcolor: 'rgba(0,0,0,0)',
         },
     };
+}
 
-    Plotly.react('probs-plot', [trace], {
-        paper_bgcolor: THEME.bg_medium,
-        plot_bgcolor: THEME.bg_medium,
-        font: { color: THEME.text_secondary },
-        margin: { t: 30, r: 20, b: 40, l: 40 },
+function probsLayout() {
+    return {
+        paper_bgcolor: THEME.panel,
+        plot_bgcolor: THEME.panel,
+        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        margin: { t: 24, r: 20, b: 40, l: 40 },
         xaxis: {
-            ticktext: ['LH', 'RH', 'LL', 'RL'],
+            ticktext: ABBR,
             tickvals: [0, 1, 2, 3],
         },
         yaxis: {
             range: [0, 1.2],
-            gridcolor: THEME.border,
+            gridcolor: THEME.grid,
         },
-        bargap: 0.3,
+        bargap: 0.28,
+    };
+}
+
+function metricsLayout() {
+    return {
+        paper_bgcolor: THEME.panel,
+        plot_bgcolor: THEME.panel,
+        font: { color: THEME.muted, family: 'Trebuchet MS, sans-serif' },
+        margin: { t: 18, r: 20, b: 40, l: 46 },
+        xaxis: {
+            title: 'Recent Samples',
+            gridcolor: THEME.grid,
+        },
+        yaxis: {
+            range: [0, 1.05],
+            gridcolor: THEME.grid,
+        },
+        legend: {
+            orientation: 'h',
+            y: 1.15,
+            x: 0,
+            bgcolor: 'rgba(0,0,0,0)',
+        },
+    };
+}
+
+function plotConfig() {
+    return {
+        responsive: true,
+        displayModeBar: false,
+    };
+}
+
+function smoothSeries(values, windowSize) {
+    return values.map((_, idx) => {
+        const start = Math.max(0, idx - windowSize + 1);
+        const slice = values.slice(start, idx + 1);
+        const valid = slice.filter((value) => Number.isFinite(value));
+        if (!valid.length) {
+            return 0;
+        }
+        return valid.reduce((sum, value) => sum + value, 0) / valid.length;
     });
 }
 
-function updateMetricsPlot(data) {
-    const confidences = data.confidences;
-    const rewards = data.rewards;
-    const accuracies = data.accuracies;
+function labelForStreamState(state) {
+    switch (state) {
+        case 'live':
+            return 'Live Stream';
+        case 'waiting':
+            return 'Waiting For Stream';
+        case 'stale':
+            return 'Stream Paused';
+        default:
+            return 'Idle';
+    }
+}
 
-    // Smooth the data
-    const smoothed = (arr, window) => {
-        const result = [];
-        for (let i = 0; i < arr.length; i++) {
-            const start = Math.max(0, i - window + 1);
-            const slice = arr.slice(start, i + 1);
-            result.push(slice.reduce((a, b) => a + b, 0) / slice.length);
-        }
-        return result;
-    };
+function formatAge(value) {
+    if (value === null || value === undefined || !Number.isFinite(value)) {
+        return '--';
+    }
+    if (value < 1) {
+        return `${(value * 1000).toFixed(0)} ms ago`;
+    }
+    return `${value.toFixed(1)} s ago`;
+}
 
-    const x = Array.from({ length: confidences.length }, (_, i) => i);
-
-    const traces = [
-        {
-            x: x,
-            y: smoothed(confidences, 10),
-            type: 'scatter',
-            mode: 'lines',
-            name: 'Confidence',
-            line: { color: THEME.success, width: 2 },
-        },
-        {
-            x: x,
-            y: smoothed(rewards, 10),
-            type: 'scatter',
-            mode: 'lines',
-            name: 'Reward',
-            line: { color: THEME.accent, width: 2 },
-        },
-        {
-            x: x,
-            y: smoothed(accuracies, 10),
-            type: 'scatter',
-            mode: 'lines',
-            name: 'Accuracy',
-            line: { color: THEME.warning, width: 2, dash: 'dash' },
-        },
-    ];
-
-    Plotly.react('metrics-plot', traces, {
-        paper_bgcolor: THEME.bg_medium,
-        plot_bgcolor: THEME.bg_medium,
-        font: { color: THEME.text_secondary },
-        margin: { t: 10, r: 20, b: 40, l: 50 },
-        xaxis: {
-            title: 'Sample',
-            gridcolor: THEME.border,
-        },
-        yaxis: {
-            range: [0, 1.1],
-            gridcolor: THEME.border,
-        },
-        showlegend: true,
-        legend: {
-            x: 0,
-            y: 1,
-            xanchor: 'left',
-            bgcolor: 'rgba(0,0,0,0.5)',
-        },
-    });
+function formatFixed(value) {
+    return Number.isFinite(value) ? value.toFixed(2) : '--';
 }
