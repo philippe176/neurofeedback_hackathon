@@ -1,5 +1,5 @@
 """
-Generative (observation) model — Version 2.
+Generative (observation) model.
 
 Maps the 8-dim rotated latent vector to the n_obs-dim observed signal:
 
@@ -8,13 +8,9 @@ Maps the 8-dim rotated latent vector to the n_obs-dim observed signal:
 A is a fixed random n_obs × n_latent mixing matrix with unit-norm columns,
 generated once at construction time and unknown to the students.
 
-The rotation R comes from LatentDynamics.get_rotation().  In Version 2 the
-rotation only touches the fine dims (1-2) and noise dims (5-7); dim 0 (the
-coarse cluster signal) is never rotated so the two clusters are always
-separable regardless of strategy.
-
-class_scale suppresses only the fine dims (1-2).  Dim 0 (coarse) is always
-at full strength so clusters remain visible even before strategy is learned.
+The rotation R comes from LatentDynamics.get_rotation(); it is what makes
+the problem hard: the same linear projection W that separates classes at one
+strategy position will fail at another.
 """
 
 import numpy as np
@@ -49,7 +45,7 @@ class GenerativeModel:
         the right projection reveals the classes.
         """
         z_scaled = z.copy()
-        z_scaled[1:3] *= class_scale         # suppress only fine dims; coarse (dim 0) always present
+        z_scaled[:3] *= class_scale          # suppress class dims when strategy is poor
         z_rotated = R @ z_scaled
         x = self.A @ z_rotated
         x += np.random.normal(0.0, noise_std, self.n_obs)
