@@ -1,13 +1,15 @@
-# Core dependencies
+# Core numerical / ML dependencies
 numpy>=1.26
-torch>=2.2
+scipy>=1.12
 scikit-learn>=1.4
+torch>=2.2
 
-# Emulator (ZMQ-based streaming)
+# Emulator and visualization
 pyzmq>=25.0
-
-# Visualization
 matplotlib>=3.8
+pygame>=2.6
+PyOpenGL>=3.1
+PyOpenGL-accelerate>=3.1
 
 # Web application
 flask>=3.0

@@ -1,5 +1,5 @@
 # Byte-compiled / optimized / DLL files
-__pycache__
+__pycache__/
 *.py[cod]
 *$py.class
 
@@ -39,14 +39,19 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+pytest-cache*
+pytest-cache-files-*
 
 # Virtual environments
 venv/
 env/
 ENV/
-.venv
+.venv/
+env.bak/
+venv.bak/
+.env
 
-# IDEs
+# IDEs / editors
 .vscode/
 .idea/
 *.swp
@@ -58,23 +63,11 @@ ENV/
 Thumbs.db
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
 
 # pyenv
 .python-version
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Test cache
-pytest-cache*
-
-# Saved models
+# Local app artifacts
 saved_models/
 test_artifacts/
