@@ -19,6 +19,8 @@ from .reward import RewardProvider
 from .stream import ExperienceReplayBuffer
 from .types import Experience, InferenceStep, StreamSample, TrainingMetrics
 
+_USE_SAMPLE_LABEL = object()
+
 
 class OnlineTrainer:
     def __init__(
@@ -48,7 +50,11 @@ class OnlineTrainer:
         self.reward_baseline = 0.0
         self._baseline_initialized = False
 
-    def process_sample(self, sample: StreamSample) -> InferenceStep:
+    def process_sample(
+        self,
+        sample: StreamSample,
+        training_label: int | None | object = _USE_SAMPLE_LABEL,
+    ) -> InferenceStep:
         self.model.eval()
         with torch.no_grad():
             x = torch.from_numpy(sample.embedding).to(self.device, dtype=torch.float32).unsqueeze(0)
@@ -70,7 +76,10 @@ class OnlineTrainer:
 
         self._update_reward_baseline(reward)
 
-        label_value = int(sample.label) if sample.label is not None else -1
+        if training_label is _USE_SAMPLE_LABEL:
+            label_value = int(sample.label) if sample.label is not None else -1
+        else:
+            label_value = int(training_label) if training_label is not None else -1
         if label_value >= 0:
             self.labeled_seen += 1
 

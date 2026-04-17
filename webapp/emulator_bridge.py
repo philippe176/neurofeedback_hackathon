@@ -17,7 +17,7 @@ import copy
 import importlib.util
 import re
 import time
-from collections import Counter, deque
+from collections import deque
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -115,6 +115,8 @@ class EmulatorBridge:
         embedding_key: str = "data",
         receiver: StreamReceiver | None = None,
         history_len: int = 480,
+        calibration_samples_per_class: int = 200,
+        transition_ignore_samples: int = 40,
         centroid_window: int = 120,
         centroid_min_samples_per_class: int = 12,
         display_window: int = 180,
@@ -129,6 +131,8 @@ class EmulatorBridge:
         self.stream_port = int(stream_port)
         self.embedding_key = embedding_key
         self.history_len = history_len
+        self.calibration_samples_per_class = max(10, int(calibration_samples_per_class))
+        self.transition_ignore_samples = max(0, int(transition_ignore_samples))
         self.centroid_window = centroid_window
         self.centroid_min_samples_per_class = max(1, int(centroid_min_samples_per_class))
         self.display_window = max(10, min(int(display_window), history_len))
@@ -179,6 +183,28 @@ class EmulatorBridge:
         self._strategy_qualities: deque[float] = deque(maxlen=history_len)
         self._target_margins: deque[float] = deque(maxlen=history_len)
         self._last_viz_refit_sample = -1
+        self._last_seen_label: int | None = None
+        self._samples_since_label_change = 0
+        self._transition_ignored = False
+        self._transition_samples_remaining = 0
+
+        self._calibration_neural_by_class = {
+            cls: deque(maxlen=self.calibration_samples_per_class)
+            for cls in range(4)
+        }
+        self._calibration_penultimate_by_class = {
+            cls: deque(maxlen=self.calibration_samples_per_class)
+            for cls in range(4)
+        }
+        self._reference_neural_by_class = {
+            cls: []
+            for cls in range(4)
+        }
+        self._reference_penultimate_by_class = {
+            cls: []
+            for cls in range(4)
+        }
+        self._reference_snapshot_ready = False
 
         self.exploration_target_class: int | None = None
         self._exploration_penultimate: list[np.ndarray] = []
@@ -214,7 +240,7 @@ class EmulatorBridge:
         self.training_phase = normalized
 
         if self.trainer is not None:
-            self.trainer.frozen = (normalized == "exploration")
+            self.trainer.frozen = (normalized != "calibration")
 
         if normalized == "exploration":
             self._exploration_penultimate = []
@@ -361,6 +387,11 @@ class EmulatorBridge:
             "session": session,
             "calibration": calibration,
             "coach": coach,
+            "calibration_samples_per_class": self.calibration_samples_per_class,
+            "transition_ignore_samples": self.transition_ignore_samples,
+            "transition_ignored": self._transition_ignored,
+            "transition_samples_remaining": self._transition_samples_remaining,
+            "graph_frozen": self.training_phase != "calibration",
             "display_window": self.display_window,
             "display_min_samples_per_class": self.display_min_samples_per_class,
             "centroid_min_samples_per_class": self.centroid_min_samples_per_class,
@@ -376,15 +407,16 @@ class EmulatorBridge:
             self._last_payload = payload
             return payload
 
-        self._process_sample_metadata(sample)
         self._ensure_decoder_ready(sample.embedding.shape[0])
+        self._process_sample_metadata(sample)
 
         if self.trainer is None:
             payload = self._build_stale_payload()
             self._last_payload = payload
             return payload
 
-        result = self.trainer.process_sample(sample)
+        training_label = self._training_label_for_sample(sample)
+        result = self.trainer.process_sample(sample, training_label=training_label)
         self.sample_count += 1
         self._append_history(sample, result)
 
@@ -438,9 +470,12 @@ class EmulatorBridge:
         }
 
     def calibration_snapshot(self) -> dict[str, Any]:
-        counts = Counter(int(label) for label in self._labels if label is not None)
-        counts_by_class = {str(cls): int(counts.get(cls, 0)) for cls in range(4)}
-        ready_classes = sum(1 for cls in range(4) if counts_by_class[str(cls)] >= 12)
+        counts_by_class = self._calibration_bank_counts()
+        ready_classes = sum(
+            1
+            for cls in range(4)
+            if counts_by_class[str(cls)] >= self.calibration_samples_per_class
+        )
 
         label_centroids = self._compute_true_label_centroids()
         label_min_sep, label_mean_sep = self._compute_separation(label_centroids)
@@ -459,12 +494,20 @@ class EmulatorBridge:
                 1.0,
             )
         )
-        ready = bool(ready_classes == 4 and label_mean_sep >= 0.80 and rolling_alignment >= 0.55)
+        ready = bool(
+            ready_classes == 4
+            and label_mean_sep >= 0.80
+            and rolling_alignment >= 0.55
+        )
 
         if ready:
             message = "All four tasks are separating reliably. The decoder is ready for stronger neurofeedback."
         elif ready_classes < 4:
-            message = "Collect stable attempts for every task so each label gets its own zone."
+            message = (
+                "Keep collecting stable attempts for every task. The first "
+                f"{self.transition_ignore_samples} samples after a label switch are ignored, "
+                "then each class fills its own calibration bank."
+            )
         elif label_mean_sep < 0.80:
             message = "The tasks exist, but their zones still overlap. Keep the strategies that pull them farther apart."
         else:
@@ -475,6 +518,8 @@ class EmulatorBridge:
             "readiness": readiness,
             "label_counts": counts_by_class,
             "classes_ready": ready_classes,
+            "target_per_class": self.calibration_samples_per_class,
+            "reference_ready": self._reference_snapshot_ready,
             "min_label_separation": label_min_sep,
             "mean_label_separation": label_mean_sep,
             "rolling_alignment": rolling_alignment,
@@ -617,7 +662,7 @@ class EmulatorBridge:
             reward_provider=self.reward_provider,
             device=self.device,
         )
-        self.trainer.frozen = (self.training_phase == "exploration")
+        self.trainer.frozen = (self.training_phase != "calibration")
 
     def _ensure_decoder_ready(self, input_dim: int) -> None:
         input_dim = int(input_dim)
@@ -630,12 +675,46 @@ class EmulatorBridge:
         self._reset_history()
 
     def _process_sample_metadata(self, sample: StreamSample) -> None:
+        self._update_label_transition(sample.label)
         self.current_class = sample.label
         self.last_source_sample_idx = int(sample.sample_idx)
         self.last_sample_wall_time = time.time()
         self.last_stream_timestamp = float(sample.timestamp)
         if sample.difficulty:
             self.difficulty = str(sample.difficulty)
+
+    def _update_label_transition(self, label: int | None) -> None:
+        if label is None:
+            self._last_seen_label = None
+            self._samples_since_label_change = 0
+            self._transition_ignored = False
+            self._transition_samples_remaining = 0
+            return
+
+        if label != self._last_seen_label:
+            self._last_seen_label = int(label)
+            self._samples_since_label_change = 1
+        else:
+            self._samples_since_label_change += 1
+
+        ignore_phase = self.training_phase in {"calibration", "exploration"}
+        self._transition_ignored = (
+            ignore_phase
+            and self._samples_since_label_change <= self.transition_ignore_samples
+        )
+        self._transition_samples_remaining = max(
+            0,
+            self.transition_ignore_samples - self._samples_since_label_change + 1,
+        ) if self._transition_ignored else 0
+
+    def _training_label_for_sample(self, sample: StreamSample) -> int | None:
+        if self.training_phase != "calibration":
+            return None
+        if sample.label is None:
+            return None
+        if self._transition_ignored:
+            return None
+        return int(sample.label)
 
     def _append_history(self, sample: StreamSample, result: InferenceStep) -> None:
         self._neural_points.append(np.asarray(result.projection, dtype=float).copy())
@@ -658,12 +737,14 @@ class EmulatorBridge:
             last_acc = self._accuracies[-1] if self._accuracies else agreement
             self._accuracies.append(last_acc)
 
+        self._append_calibration_bank(sample, result)
         self._refresh_projected_history()
 
         if (
             self.training_phase == "exploration"
             and self.exploration_target_class is not None
             and sample.label == self.exploration_target_class
+            and not self._transition_ignored
         ):
             self._exploration_penultimate.append(
                 np.asarray(result.penultimate, dtype=float).copy()
@@ -674,6 +755,37 @@ class EmulatorBridge:
             if n >= 20 and (n - self._exploration_last_analysis) >= self._exploration_reanalyze_every:
                 self._run_exploration_analysis()
                 self._exploration_last_analysis = n
+
+    def _append_calibration_bank(self, sample: StreamSample, result: InferenceStep) -> None:
+        if self.training_phase != "calibration":
+            return
+        if sample.label is None or self._transition_ignored:
+            return
+
+        label = int(sample.label)
+        self._calibration_neural_by_class[label].append(
+            np.asarray(result.projection, dtype=float).copy()
+        )
+        self._calibration_penultimate_by_class[label].append(
+            np.asarray(result.penultimate, dtype=float).copy()
+        )
+
+        if self._reference_snapshot_ready:
+            return
+        if all(
+            len(self._calibration_penultimate_by_class[cls]) >= self.calibration_samples_per_class
+            for cls in range(4)
+        ):
+            for cls in range(4):
+                self._reference_neural_by_class[cls] = [
+                    np.asarray(point, dtype=float).copy()
+                    for point in self._calibration_neural_by_class[cls]
+                ]
+                self._reference_penultimate_by_class[cls] = [
+                    np.asarray(point, dtype=float).copy()
+                    for point in self._calibration_penultimate_by_class[cls]
+                ]
+            self._reference_snapshot_ready = True
 
     def _run_exploration_analysis(self) -> None:
         from model.exploration import analyze_strategies
@@ -705,6 +817,7 @@ class EmulatorBridge:
         centroids = self._compute_centroids()
         min_sep, mean_sep = self._compute_separation(centroids)
         mean_spread = self._compute_spread(centroids)
+        cluster_points, cluster_labels = self._cluster_display_points()
         session = self.session_snapshot()
         calibration = self.calibration_snapshot()
         coach = self._build_coach_snapshot(
@@ -750,6 +863,8 @@ class EmulatorBridge:
             "labels": [None if label is None else int(label) for label in self._labels],
             "predictions": list(self._preds),
             "display_indices": self._display_indices(),
+            "cluster_points": cluster_points,
+            "cluster_labels": cluster_labels,
             "display_window": self.display_window,
             "display_min_samples_per_class": self.display_min_samples_per_class,
             "confidences": list(self._confs),
@@ -757,11 +872,16 @@ class EmulatorBridge:
             "agreements": list(self._agreements),
             "accuracies": list(self._accuracies),
             "centroids": {str(k): v.tolist() for k, v in centroids.items()},
+            "reference_centroids": {str(k): v.tolist() for k, v in self._reference_centroids().items()},
             "centroid_window": self.centroid_window,
             "centroid_min_samples_per_class": self.centroid_min_samples_per_class,
+            "calibration_samples_per_class": self.calibration_samples_per_class,
             "min_separation": min_sep,
             "mean_separation": mean_sep,
             "mean_spread": mean_spread,
+            "transition_ignored": self._transition_ignored,
+            "transition_samples_remaining": self._transition_samples_remaining,
+            "graph_frozen": self.training_phase != "calibration",
             "session": session,
             "calibration": calibration,
             "coach": coach,
@@ -823,6 +943,8 @@ class EmulatorBridge:
             "labels": [],
             "predictions": [],
             "display_indices": [],
+            "cluster_points": [],
+            "cluster_labels": [],
             "display_window": self.display_window,
             "display_min_samples_per_class": self.display_min_samples_per_class,
             "confidences": [],
@@ -830,11 +952,16 @@ class EmulatorBridge:
             "agreements": [],
             "accuracies": [],
             "centroids": {},
+            "reference_centroids": {},
             "centroid_window": self.centroid_window,
             "centroid_min_samples_per_class": self.centroid_min_samples_per_class,
+            "calibration_samples_per_class": self.calibration_samples_per_class,
             "min_separation": 0.0,
             "mean_separation": 0.0,
             "mean_spread": 0.0,
+            "transition_ignored": self._transition_ignored,
+            "transition_samples_remaining": self._transition_samples_remaining,
+            "graph_frozen": self.training_phase != "calibration",
             "session": self.session_snapshot(),
             "calibration": self.calibration_snapshot(),
             "coach": self.coach_snapshot(),
@@ -862,6 +989,9 @@ class EmulatorBridge:
         payload["model_name"] = self.model_name
         payload["viz_method"] = self.viz_method
         payload["viz_name"] = self.viz_name
+        payload["graph_frozen"] = self.training_phase != "calibration"
+        payload["transition_ignored"] = self._transition_ignored
+        payload["transition_samples_remaining"] = self._transition_samples_remaining
         payload["session"] = self.session_snapshot()
         payload["calibration"] = self.calibration_snapshot()
         payload["coach"] = self.coach_snapshot()
@@ -908,21 +1038,9 @@ class EmulatorBridge:
         }
 
     def _compute_centroids(self) -> dict[int, np.ndarray]:
-        if not self._points:
+        points_arr, labels_arr = self._calibration_projected_points()
+        if points_arr.size == 0:
             return {}
-
-        labels_arr = self._plot_labels_array()
-        indices = self._window_indices_with_class_floor(
-            labels=labels_arr.tolist(),
-            window=self.centroid_window,
-            min_per_class=self.centroid_min_samples_per_class,
-        )
-        if not indices:
-            return {}
-
-        points_arr = np.asarray([self._points[idx] for idx in indices], dtype=float)
-        labels_arr = labels_arr[indices]
-
         centroids: dict[int, np.ndarray] = {}
         for cls in range(4):
             mask = labels_arr == cls
@@ -931,28 +1049,7 @@ class EmulatorBridge:
         return centroids
 
     def _compute_true_label_centroids(self) -> dict[int, np.ndarray]:
-        if not self._points:
-            return {}
-
-        labels = list(self._labels)
-        indices = self._window_indices_with_class_floor(
-            labels=labels,
-            window=self.centroid_window,
-            min_per_class=self.centroid_min_samples_per_class,
-        )
-        if not indices:
-            return {}
-
-        points_arr = np.asarray([self._points[idx] for idx in indices], dtype=float)
-        labels = [labels[idx] for idx in indices]
-
-        centroids: dict[int, np.ndarray] = {}
-        for cls in range(4):
-            indices = [idx for idx, label in enumerate(labels) if label == cls]
-            if len(indices) < 3:
-                continue
-            centroids[cls] = np.mean(points_arr[indices], axis=0)
-        return centroids
+        return self._compute_centroids()
 
     def _compute_separation(self, centroids: dict[int, np.ndarray]) -> tuple[float, float]:
         if len(centroids) < 2:
@@ -968,20 +1065,12 @@ class EmulatorBridge:
         return float(np.min(dists)), float(np.mean(dists))
 
     def _compute_spread(self, centroids: dict[int, np.ndarray]) -> float:
-        if not self._points or not centroids:
+        if not centroids:
             return 0.0
 
-        labels_arr = self._plot_labels_array()
-        indices = self._window_indices_with_class_floor(
-            labels=labels_arr.tolist(),
-            window=self.centroid_window,
-            min_per_class=self.centroid_min_samples_per_class,
-        )
-        if not indices:
+        points_arr, labels_arr = self._calibration_projected_points()
+        if points_arr.size == 0:
             return 0.0
-
-        points_arr = np.asarray([self._points[idx] for idx in indices], dtype=float)
-        labels_arr = labels_arr[indices]
 
         spreads = []
         for cls, centroid in centroids.items():
@@ -1009,6 +1098,109 @@ class EmulatorBridge:
             window=self.display_window,
             min_per_class=self.display_min_samples_per_class,
         )
+
+    def _calibration_bank_counts(self) -> dict[str, int]:
+        return {
+            str(cls): int(len(self._calibration_penultimate_by_class[cls]))
+            for cls in range(4)
+        }
+
+    def _calibration_projected_points(self) -> tuple[np.ndarray, np.ndarray]:
+        labels: list[int] = []
+
+        if self.viz_method == "neural":
+            points = [
+                np.asarray(point, dtype=float)
+                for cls in range(4)
+                for point in self._calibration_neural_by_class[cls]
+            ]
+            for cls in range(4):
+                labels.extend([cls] * len(self._calibration_neural_by_class[cls]))
+            if not points:
+                return np.empty((0, self.model_cfg.projection_dim), dtype=float), np.empty((0,), dtype=np.int64)
+            return np.asarray(points, dtype=float), np.asarray(labels, dtype=np.int64)
+
+        embeddings = [
+            np.asarray(point, dtype=float)
+            for cls in range(4)
+            for point in self._calibration_penultimate_by_class[cls]
+        ]
+        for cls in range(4):
+            labels.extend([cls] * len(self._calibration_penultimate_by_class[cls]))
+        if not embeddings:
+            return np.empty((0, self.model_cfg.projection_dim), dtype=float), np.empty((0,), dtype=np.int64)
+
+        embedding_arr = np.asarray(embeddings, dtype=float)
+        try:
+            projected = self.projector.transform(embedding_arr)
+        except Exception:
+            projected = embedding_arr[:, : self.model_cfg.projection_dim]
+        return np.asarray(projected, dtype=float), np.asarray(labels, dtype=np.int64)
+
+    def _cluster_display_points(self) -> tuple[list[list[float]], list[int]]:
+        points_arr, labels_arr = self._calibration_projected_points()
+        if points_arr.size == 0:
+            return [], []
+        points = [np.asarray(point, dtype=float).tolist() for point in points_arr]
+        labels = [int(label) for label in labels_arr.tolist()]
+        return points, labels
+
+    def _projector_fit_data(self) -> tuple[np.ndarray, np.ndarray]:
+        embeddings = [
+            np.asarray(point, dtype=float)
+            for cls in range(4)
+            for point in self._calibration_penultimate_by_class[cls]
+        ]
+        labels = [
+            cls
+            for cls in range(4)
+            for _ in self._calibration_penultimate_by_class[cls]
+        ]
+        if not embeddings:
+            return np.empty((0, 0), dtype=float), np.empty((0,), dtype=np.int64)
+
+        fit_x = np.asarray(embeddings, dtype=float)
+        fit_y = np.asarray(labels, dtype=np.int64)
+        fit_window = min(self.viz_fit_window, fit_x.shape[0])
+        return fit_x[-fit_window:], fit_y[-fit_window:]
+
+    def _reference_centroids(self) -> dict[int, np.ndarray]:
+        labels: list[int] = []
+
+        if self.viz_method == "neural":
+            points = [
+                np.asarray(point, dtype=float)
+                for cls in range(4)
+                for point in self._reference_neural_by_class[cls]
+            ]
+            for cls in range(4):
+                labels.extend([cls] * len(self._reference_neural_by_class[cls]))
+            if not points:
+                return {}
+            points_arr = np.asarray(points, dtype=float)
+        else:
+            embeddings = [
+                np.asarray(point, dtype=float)
+                for cls in range(4)
+                for point in self._reference_penultimate_by_class[cls]
+            ]
+            for cls in range(4):
+                labels.extend([cls] * len(self._reference_penultimate_by_class[cls]))
+            if not embeddings:
+                return {}
+            embedding_arr = np.asarray(embeddings, dtype=float)
+            try:
+                points_arr = np.asarray(self.projector.transform(embedding_arr), dtype=float)
+            except Exception:
+                points_arr = embedding_arr[:, : self.model_cfg.projection_dim]
+
+        labels_arr = np.asarray(labels, dtype=np.int64)
+        centroids: dict[int, np.ndarray] = {}
+        for cls in range(4):
+            mask = labels_arr == cls
+            if int(np.sum(mask)) >= 3:
+                centroids[cls] = np.mean(points_arr[mask], axis=0)
+        return centroids
 
     def _window_indices_with_class_floor(
         self,
@@ -1041,16 +1233,19 @@ class EmulatorBridge:
             projected = np.stack(list(self._neural_points), axis=0)
         else:
             embeddings = np.stack(list(self._penultimate), axis=0)
-            labels = self._projection_labels()
-            fit_window = min(self.viz_fit_window, embeddings.shape[0])
-            fit_x = embeddings[-fit_window:]
-            fit_y = labels[-fit_window:]
+            fit_x, fit_y = self._projector_fit_data()
+            if fit_x.size == 0:
+                fit_x = embeddings
+                fit_y = self._projection_labels()
             should_refit = (
                 self._last_viz_refit_sample < 0
-                or (self.sample_count - self._last_viz_refit_sample) >= self.viz_refit_every
+                or (
+                    self.training_phase == "calibration"
+                    and (self.sample_count - self._last_viz_refit_sample) >= self.viz_refit_every
+                )
             )
             if should_refit:
-                self.projector.fit(fit_x, y=fit_y)
+                self.projector.fit(fit_x, y=fit_y if fit_y.size else None)
                 self._last_viz_refit_sample = self.sample_count
             projected = self.projector.transform(embeddings)
 
@@ -1071,6 +1266,19 @@ class EmulatorBridge:
         self._class_scales.clear()
         self._strategy_qualities.clear()
         self._target_margins.clear()
+        self._last_seen_label = None
+        self._samples_since_label_change = 0
+        self._transition_ignored = False
+        self._transition_samples_remaining = 0
+        for cls in range(4):
+            self._calibration_neural_by_class[cls].clear()
+            self._calibration_penultimate_by_class[cls].clear()
+            self._reference_neural_by_class[cls] = []
+            self._reference_penultimate_by_class[cls] = []
+        self._reference_snapshot_ready = False
+        self._exploration_penultimate = []
+        self._exploration_last_analysis = 0
+        self._exploration_result = None
         self._last_viz_refit_sample = -1
         self._last_payload = self._build_waiting_payload()
 

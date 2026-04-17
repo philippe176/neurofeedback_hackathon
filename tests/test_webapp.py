@@ -52,9 +52,20 @@ def make_sample(sample_idx: int, label: int | None, dim: int = 16) -> StreamSamp
     )
 
 
-def make_training_samples(n_per_class: int = 16, dim: int = 16) -> list[StreamSample]:
+def make_training_samples(
+    n_per_class: int = 16,
+    dim: int = 16,
+    contiguous: bool = False,
+) -> list[StreamSample]:
     samples: list[StreamSample] = []
     idx = 0
+    if contiguous:
+        for label in range(4):
+            for _ in range(n_per_class):
+                samples.append(make_sample(idx, label, dim=dim))
+                idx += 1
+        return samples
+
     for _ in range(n_per_class):
         for label in range(4):
             samples.append(make_sample(idx, label, dim=dim))
@@ -67,7 +78,7 @@ def make_skewed_training_samples(dim: int = 16) -> list[StreamSample]:
     idx = 0
 
     for label in range(4):
-        for _ in range(24):
+        for _ in range(60):
             samples.append(make_sample(idx, label, dim=dim))
             idx += 1
 
@@ -122,19 +133,25 @@ def test_emulator_bridge_processes_stream_sample():
 def test_emulator_bridge_calibration_counts_and_training_progress():
     from webapp.emulator_bridge import EmulatorBridge
 
-    receiver = FakeReceiver(make_training_samples(n_per_class=18))
-    bridge = EmulatorBridge(receiver=receiver, viz_method="pca")
+    receiver = FakeReceiver(make_training_samples(n_per_class=60, contiguous=True))
+    bridge = EmulatorBridge(
+        receiver=receiver,
+        viz_method="pca",
+        calibration_samples_per_class=12,
+        transition_ignore_samples=40,
+    )
 
     last = None
-    for _ in range(72):
+    for _ in range(240):
         last = bridge.step(timeout=0.0)
 
     assert last is not None
     assert bridge.trainer is not None
-    assert bridge.trainer.labeled_seen >= 72
+    assert bridge.trainer.labeled_seen >= 80
     assert last["training"]["num_updates"] > 0
     assert last["calibration"]["classes_ready"] == 4
     assert last["calibration"]["label_counts"]["0"] >= 12
+    assert last["calibration"]["target_per_class"] == 12
     assert last["viz_method"] == "pca"
     assert len(last["points"]) == bridge.sample_count
 
@@ -145,6 +162,8 @@ def test_emulator_bridge_keeps_other_classes_visible_during_skewed_calibration()
     receiver = FakeReceiver(make_skewed_training_samples())
     bridge = EmulatorBridge(
         receiver=receiver,
+        calibration_samples_per_class=12,
+        transition_ignore_samples=40,
         centroid_window=40,
         centroid_min_samples_per_class=12,
         display_window=80,
@@ -152,17 +171,70 @@ def test_emulator_bridge_keeps_other_classes_visible_during_skewed_calibration()
     )
 
     last = None
-    for _ in range(192):
+    for _ in range(336):
         last = bridge.step(timeout=0.0)
 
     assert last is not None
-    display_indices = last["display_indices"]
-    display_labels = [last["labels"][idx] for idx in display_indices]
+    display_labels = last["cluster_labels"]
 
     for cls in range(4):
         assert display_labels.count(cls) >= 12
 
     assert len(last["centroids"]) == 4
+
+
+def test_emulator_bridge_ignores_first_40_samples_after_label_change():
+    from webapp.emulator_bridge import EmulatorBridge
+
+    receiver = FakeReceiver(make_training_samples(n_per_class=55, contiguous=True))
+    bridge = EmulatorBridge(
+        receiver=receiver,
+        calibration_samples_per_class=20,
+        transition_ignore_samples=40,
+    )
+
+    first_label_counts = []
+    for _ in range(45):
+        last = bridge.step(timeout=0.0)
+        first_label_counts.append(last["calibration"]["label_counts"]["0"])
+
+    assert first_label_counts[38] == 0
+    assert first_label_counts[39] == 0
+    assert first_label_counts[40] == 1
+    assert last["transition_ignored"] is False
+
+
+def test_emulator_bridge_freezes_model_and_graph_outside_calibration():
+    from webapp.emulator_bridge import EmulatorBridge
+
+    calibration_samples = make_training_samples(n_per_class=55, contiguous=True)
+    feedback_samples = [make_sample(220 + i, 0) for i in range(50)]
+    receiver = FakeReceiver(calibration_samples + feedback_samples)
+    bridge = EmulatorBridge(
+        receiver=receiver,
+        calibration_samples_per_class=12,
+        transition_ignore_samples=40,
+    )
+
+    last = None
+    for _ in range(220):
+        last = bridge.step(timeout=0.0)
+
+    assert last is not None
+    frozen_cluster_points = list(last["cluster_points"])
+    frozen_centroids = dict(last["centroids"])
+    updates_before = last["training"]["num_updates"]
+
+    bridge.set_training_phase("feedback")
+
+    for _ in range(50):
+        last = bridge.step(timeout=0.0)
+
+    assert last is not None
+    assert last["graph_frozen"] is True
+    assert last["cluster_points"] == frozen_cluster_points
+    assert last["centroids"] == frozen_centroids
+    assert last["training"]["num_updates"] == updates_before
 
 
 def test_emulator_bridge_can_switch_model_and_viz_before_samples():

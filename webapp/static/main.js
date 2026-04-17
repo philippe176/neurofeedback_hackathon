@@ -36,7 +36,7 @@ let currentModelType = 'dnn';
 let currentModelName = 'DNN Decoder';
 let currentVizMethod = 'neural';
 let currentVizName = 'Neural Projection';
-let centroidWindow = 120;
+let centroidWindow = 200;
 let streamState = {};
 let calibrationState = {};
 let coachState = {};
@@ -368,9 +368,14 @@ function updateStatusCards() {
     const hasLabel = data.current_class !== undefined && data.current_class !== null;
 
     document.getElementById('intended-task').textContent = hasLabel ? currentName : 'Pick a task';
-    document.getElementById('intended-task-subtitle').textContent = hasLabel
-        ? 'Chosen in the emulator with 1-4. Keep using arrows until the model follows it.'
-        : 'Use 1-4 in the emulator to declare the task you want to train.';
+    if (data.transition_ignored && typeof data.transition_samples_remaining === 'number') {
+        document.getElementById('intended-task-subtitle').textContent =
+            `New label settling in. ${data.transition_samples_remaining} more samples are ignored before this class enters calibration/exploration.`;
+    } else {
+        document.getElementById('intended-task-subtitle').textContent = hasLabel
+            ? 'Chosen in the emulator with 1-4. Keep using arrows until the model follows it.'
+            : 'Use 1-4 in the emulator to declare the task you want to train.';
+    }
 
     document.getElementById('predicted-task').textContent = predictedName;
     if (!latestData || latestData.predicted_class === null || latestData.predicted_class === undefined) {
@@ -406,6 +411,7 @@ function updateStatusCards() {
 
 function updateCalibrationPanel() {
     const readiness = calibrationState.readiness || 0;
+    const targetPerClass = calibrationState.target_per_class || 0;
     document.getElementById('calibration-state').textContent = calibrationState.ready ? 'Ready For Feedback' : 'Building Clusters';
     document.getElementById('calibration-state').className = `big-chip ${calibrationState.ready ? 'ready' : 'neutral'}`;
     document.getElementById('calibration-score').textContent = `${(readiness * 100).toFixed(0)}%`;
@@ -414,7 +420,10 @@ function updateCalibrationPanel() {
 
     const counts = calibrationState.label_counts || {};
     for (let cls = 0; cls < 4; cls += 1) {
-        document.getElementById(`count-class-${cls}`).textContent = counts[String(cls)] ?? 0;
+        const count = counts[String(cls)] ?? 0;
+        document.getElementById(`count-class-${cls}`).textContent = targetPerClass
+            ? `${count}/${targetPerClass}`
+            : `${count}`;
     }
 
     if (typeof calibrationState.mean_label_separation === 'number') {
@@ -568,28 +577,19 @@ async function saveModelSnapshot() {
 
 function updateManifoldPlot(data) {
     const points = data.points || [];
-    if (!points.length) {
+    const clusterPoints = data.cluster_points || [];
+    const clusterLabels = data.cluster_labels || [];
+    if (!points.length && !clusterPoints.length) {
         Plotly.react('manifold-plot', [], manifoldLayout(), plotConfig());
         document.getElementById('cluster-count').textContent = 'Zones: 0/4';
         document.getElementById('cluster-separation').textContent = 'MinSep: -- | MeanSep: -- | Spread: --';
         return;
     }
 
-    const labels = (data.labels || []).slice(-points.length).map((label, index) => {
-        if (label === null || label === undefined) {
-            return data.predictions[index];
-        }
-        return label;
-    });
-    const displayIndices = Array.isArray(data.display_indices) && data.display_indices.length
-        ? data.display_indices.filter((index) => index >= 0 && index < points.length)
-        : points.map((_, index) => index);
-    const displayPoints = displayIndices.map((index) => points[index]);
-    const displayLabels = displayIndices.map((index) => labels[index]);
     const traces = [];
 
     for (let cls = 0; cls < 4; cls += 1) {
-        const classPoints = displayPoints.filter((_, idx) => displayLabels[idx] === cls);
+        const classPoints = clusterPoints.filter((_, idx) => clusterLabels[idx] === cls);
         if (!classPoints.length) {
             continue;
         }
@@ -607,19 +607,21 @@ function updateManifoldPlot(data) {
         });
     }
 
-    const trajectory = points.slice(-24);
-    traces.push({
-        x: trajectory.map((point) => point[0]),
-        y: trajectory.map((point) => point[1]),
-        mode: 'lines',
-        type: 'scatter',
-        name: 'Trajectory',
-        line: {
-            color: 'rgba(226, 232, 240, 0.45)',
-            width: 3,
-        },
-        showlegend: false,
-    });
+    if (points.length) {
+        const trajectory = points.slice(-24);
+        traces.push({
+            x: trajectory.map((point) => point[0]),
+            y: trajectory.map((point) => point[1]),
+            mode: 'lines',
+            type: 'scatter',
+            name: 'Trajectory',
+            line: {
+                color: 'rgba(226, 232, 240, 0.45)',
+                width: 3,
+            },
+            showlegend: false,
+        });
+    }
 
     const centroids = data.centroids || {};
     Object.entries(centroids).forEach(([cls, centroid]) => {
@@ -649,23 +651,47 @@ function updateManifoldPlot(data) {
         });
     });
 
-    const currentPoint = points[points.length - 1];
-    traces.push({
-        x: [currentPoint[0]],
-        y: [currentPoint[1]],
-        mode: 'markers',
-        type: 'scatter',
-        marker: {
-            color: '#f8fafc',
-            size: 16,
-            line: {
-                color: THEME.accent,
-                width: 4,
+    const referenceCentroids = data.reference_centroids || {};
+    Object.entries(referenceCentroids).forEach(([cls, centroid]) => {
+        const idx = parseInt(cls, 10);
+        traces.push({
+            x: [centroid[0]],
+            y: [centroid[1]],
+            mode: 'markers',
+            type: 'scatter',
+            marker: {
+                color: 'rgba(0,0,0,0)',
+                size: 24,
+                symbol: 'circle-open',
+                line: {
+                    color: CLASS_COLORS[idx],
+                    width: 2,
+                },
             },
-        },
-        name: 'Current',
-        showlegend: false,
+            name: `${CLASS_NAMES[idx]} Reference`,
+            showlegend: false,
+        });
     });
+
+    if (points.length) {
+        const currentPoint = points[points.length - 1];
+        traces.push({
+            x: [currentPoint[0]],
+            y: [currentPoint[1]],
+            mode: 'markers',
+            type: 'scatter',
+            marker: {
+                color: '#f8fafc',
+                size: 16,
+                line: {
+                    color: THEME.accent,
+                    width: 4,
+                },
+            },
+            name: 'Current',
+            showlegend: false,
+        });
+    }
 
     if (trainingPhase === 'exploration' && explorationState && explorationState.analysis) {
         const ea = explorationState.analysis;
@@ -708,11 +734,11 @@ function updateManifoldPlot(data) {
 
     Plotly.react('manifold-plot', traces, manifoldLayout(), plotConfig());
 
-    const displayCount = displayIndices.length;
-    const displayWindow = data.display_window || displayCount;
-    const classFloor = data.display_min_samples_per_class || 0;
+    const displayCount = clusterPoints.length;
+    const targetPerClass = data.calibration_samples_per_class || 0;
+    const graphState = data.graph_frozen ? 'Frozen calibration map' : 'Live calibration map';
     document.getElementById('cluster-count').textContent =
-        `Zones: ${Object.keys(centroids).length}/4 | Showing ${displayCount}/${displayWindow} pts | Floor ${classFloor}/class`;
+        `Zones: ${Object.keys(centroids).length}/4 | ${graphState} | Bank ${displayCount}${targetPerClass ? ` (${targetPerClass}/class target)` : ''}`;
     document.getElementById('cluster-separation').textContent =
         `MinSep: ${formatFixed(data.min_separation)} | MeanSep: ${formatFixed(data.mean_separation)} | Spread: ${formatFixed(data.mean_spread)}`;
 }
