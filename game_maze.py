@@ -23,6 +23,7 @@ This file has zero knowledge of ZMQ, LDA, or raw neural data.
 
 from __future__ import annotations
 
+import random
 import threading
 
 import numpy as np
@@ -37,6 +38,8 @@ FPS              = 60
 MAX_SPEED        = 160      # pixels / second at confidence = 1.0
 PLAYER_R         = 12       # player radius in pixels
 TUTORIAL_DURATION = 60.0   # seconds of free-roam before the maze starts
+MAZE_COLS        = 21       # grid width in tiles
+MAZE_ROWS        = 13       # grid height in tiles
 
 # Class index → movement direction unit vector (dx, dy)
 DIR_VEC: dict[int, tuple[int, int]] = {
@@ -48,34 +51,65 @@ DIR_VEC: dict[int, tuple[int, int]] = {
 CLASS_NAMES = {0: "Left hand", 1: "Right hand", 2: "Left leg", 3: "Right leg"}
 
 # ---------------------------------------------------------------------------
-# Maze layout
-# 1 = wall, 0 = open corridor
-# Grid is 21 columns wide × 13 rows tall.
+# Maze generation — iterative DFS (recursive backtracker)
 # ---------------------------------------------------------------------------
-#
-#  Verified path from START (col 1, row 1) to GOAL (col 19, row 9):
-#  (1,1)→(1,5) via downward corridor  →  right along row-5 open corridor  →
-#  (19,5)→(19,9) via downward corridor.
 
-MAZE_GRID = [
-    #  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
-    [  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ],  # row  0
-    [  1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 ],  # row  1  ← START (1,1)
-    [  1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1 ],  # row  2
-    [  1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1 ],  # row  3
-    [  1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1 ],  # row  4
-    [  1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 ],  # row  5  (open corridor)
-    [  1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1 ],  # row  6
-    [  1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1 ],  # row  7
-    [  1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1 ],  # row  8
-    [  1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1 ],  # row  9  ← GOAL (19,9)
-    [  1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1 ],  # row 10
-    [  1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 ],  # row 11
-    [  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ],  # row 12
-]
+_CELL_COLS = (MAZE_COLS - 1) // 2   # 10
+_CELL_ROWS = (MAZE_ROWS - 1) // 2   # 6
 
-MAZE_COLS = len(MAZE_GRID[0])   # 21
-MAZE_ROWS = len(MAZE_GRID)      # 13
+
+def generate_maze(level: int) -> list[list[int]]:
+    """Return a fresh solvable 21×13 maze grid scaled to *level*.
+
+    level 1   → ~100 extra wall openings (nearly empty)
+    level 10+ →   0 extra wall openings (perfect maze, single correct path)
+    """
+    grid = [[1] * MAZE_COLS for _ in range(MAZE_ROWS)]
+
+    # Open every cell position (odd col × odd row)
+    for cy in range(_CELL_ROWS):
+        for cx in range(_CELL_COLS):
+            grid[2 * cy + 1][2 * cx + 1] = 0
+
+    # Iterative DFS from cell (0,0) = tile (1,1) = START_TILE
+    visited: set[tuple[int, int]] = set()
+    visited.add((0, 0))
+    stack = [(0, 0)]
+
+    while stack:
+        cx, cy = stack[-1]
+        neighbours = [
+            (cx + dcx, cy + dcy, dcx, dcy)
+            for dcx, dcy in ((-1, 0), (1, 0), (0, -1), (0, 1))
+            if 0 <= cx + dcx < _CELL_COLS
+            and 0 <= cy + dcy < _CELL_ROWS
+            and (cx + dcx, cy + dcy) not in visited
+        ]
+        if neighbours:
+            nx, ny, dcx, dcy = random.choice(neighbours)
+            grid[2 * cy + 1 + dcy][2 * cx + 1 + dcx] = 0  # carve wall
+            visited.add((nx, ny))
+            stack.append((nx, ny))
+        else:
+            stack.pop()
+
+    # Add extra openings to create shortcuts (more openings = easier)
+    extra = max(0, round(100 * (10 - level) / 9))
+    if extra > 0:
+        candidates = [
+            (c, r)
+            for r in range(1, MAZE_ROWS - 1)
+            for c in range(1, MAZE_COLS - 1)
+            if grid[r][c] == 1 and not (r % 2 == 1 and c % 2 == 1)
+        ]
+        random.shuffle(candidates)
+        for c, r in candidates[:extra]:
+            grid[r][c] = 0
+
+    return grid
+
+
+MAZE_GRID = generate_maze(1)
 
 START_TILE = (1,  1)    # (col, row)
 GOAL_TILE  = (19, 9)    # (col, row)
@@ -239,6 +273,7 @@ class MazeGame:
         self._tutorial_time  = TUTORIAL_DURATION
 
         # Maze timer
+        self._level:      int              = 1
         self._elapsed:   float       = 0.0
         self._best_time: float | None = None
         self._final_time: float | None = None   # time frozen at goal
@@ -338,6 +373,9 @@ class MazeGame:
                 self._best_time = self._elapsed
 
     def _reset(self) -> None:
+        global MAZE_GRID
+        self._level   += 1
+        MAZE_GRID      = generate_maze(self._level)
         self.player.reset(*START_TILE)
         self.won           = False
         self._win_timer    = 0.0
@@ -385,7 +423,7 @@ class MazeGame:
         screen.blit(title, title.get_rect(centerx=WIN_W // 2, y=6))
 
         hint = self._font_small.render(
-            "Move freely to get used to your brain signals.   S = skip", True, COL_DIMTEXT)
+            "Move freely to get used to your brain signals.   Tab = skip", True, COL_DIMTEXT)
         screen.blit(hint, hint.get_rect(centerx=WIN_W // 2, y=34))
 
         # Countdown (turns gold in the last 10 s)
@@ -527,6 +565,10 @@ class MazeGame:
                 self._font_small.render(f"BEST  {_fmt_time(self._best_time)}", True, COL_DIMTEXT),
                 (timer_x, MAZE_H + 34),
             )
+        screen.blit(
+            self._font_small.render(f"LEVEL  {self._level}", True, COL_DIMTEXT),
+            (timer_x, MAZE_H + 54),
+        )
 
         # --- Bottom row: prob values ---
         prob_str = "  ".join(
@@ -559,9 +601,12 @@ class MazeGame:
                 f"Best:  {_fmt_time(self._best_time)}", True, COL_DIMTEXT)
             screen.blit(best_surf, best_surf.get_rect(center=(WIN_W // 2, WIN_H // 2 + 38)))
 
-        # "Resetting…"
+        lvl_surf = self._font_sub.render(
+            f"Level {self._level} complete  →  Level {self._level + 1}", True, COL_GOAL)
+        screen.blit(lvl_surf, lvl_surf.get_rect(center=(WIN_W // 2, WIN_H // 2 + 68)))
+
         sub = self._font_small.render("Resetting maze…", True, COL_DIMTEXT)
-        screen.blit(sub, sub.get_rect(center=(WIN_W // 2, WIN_H // 2 + 72)))
+        screen.blit(sub, sub.get_rect(center=(WIN_W // 2, WIN_H // 2 + 100)))
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +645,7 @@ def run(on_event=None, on_frame=None) -> None:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     _game.running = False
-                elif event.key == pygame.K_s:
+                elif event.key == pygame.K_TAB:
                     _game.skip_tutorial()
             if on_event is not None:
                 on_event(event)
@@ -620,55 +665,49 @@ def run(on_event=None, on_frame=None) -> None:
 #
 # Controls
 # --------
-#   Arrow keys  move the player (confidence is fixed)
-#   N           decrease confidence by 0.05
-#   M           increase confidence by 0.05
-#   Q / Escape  quit
+#   WASD / Arrow keys  move the player
+#   N                  decrease confidence by 0.05
+#   M                  increase confidence by 0.05
+#   Tab                skip tutorial
+#   Q / Escape         quit
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     _confidence = [0.85]   # mutable so the closures below can write to it
+    _direction  = [None]   # currently held direction index (0-3) or None
+
+    _KEY_DIR = {
+        pygame.K_LEFT: 0, pygame.K_a: 0,
+        pygame.K_RIGHT: 1, pygame.K_d: 1,
+        pygame.K_UP: 2,   pygame.K_w: 2,
+        pygame.K_DOWN: 3, pygame.K_s: 3,
+    }
 
     def _on_event(event: pygame.event.Event) -> None:
-        if event.type != pygame.KEYDOWN:
-            return
-        if event.key == pygame.K_n:
-            _confidence[0] = round(max(0.0, _confidence[0] - 0.05), 2)
-            print(f"confidence → {_confidence[0]:.2f}")
-        elif event.key == pygame.K_m:
-            _confidence[0] = round(min(1.0, _confidence[0] + 0.05), 2)
-            print(f"confidence → {_confidence[0]:.2f}")
+        if event.type == pygame.KEYDOWN:
+            if event.key in _KEY_DIR:
+                _direction[0] = _KEY_DIR[event.key]
+            elif event.key == pygame.K_n:
+                _confidence[0] = round(max(0.0, _confidence[0] - 0.05), 2)
+                print(f"confidence → {_confidence[0]:.2f}")
+            elif event.key == pygame.K_m:
+                _confidence[0] = round(min(1.0, _confidence[0] + 0.05), 2)
+                print(f"confidence → {_confidence[0]:.2f}")
+        elif event.type == pygame.KEYUP:
+            if _KEY_DIR.get(event.key) == _direction[0]:
+                _direction[0] = None
 
     def _on_frame() -> None:
-        keys = pygame.key.get_pressed()
-
-        if   keys[pygame.K_LEFT]:  direction = 0
-        elif keys[pygame.K_RIGHT]: direction = 1
-        elif keys[pygame.K_UP]:    direction = 2
-        elif keys[pygame.K_DOWN]:  direction = 3
-        else:                      direction = None
-
+        direction = _direction[0]
         c = _confidence[0]
         if direction is not None:
-            if c <= 0.25:
-                probs = np.zeros(4, dtype=float)
-                others = [i for i in range(4) if i != direction]
-                rand_vals = np.random.random(3)
-                rand_vals = (1.0 - c) * rand_vals / rand_vals.sum()
-                probs[direction] = c
-                for i, v in zip(others, rand_vals):
-                    probs[i] = v
-            else:
-                # Put confidence mass on the chosen class, spread the rest evenly
-                probs = np.full(4, (1.0 - c) / 3.0)
-                probs[direction] = c
+            probs = np.full(4, (1.0 - c) / 3.0)
+            probs[direction] = c
         else:
-            # No key held → idle
             probs = np.zeros(4, dtype=float)
-
         update(probs)
 
-    print("Arrow keys to move  |  N = lower confidence  |  M = raise confidence")
+    print("WASD / Arrow keys to move  |  N = lower confidence  |  M = raise confidence  |  Tab = skip tutorial")
     print(f"Starting confidence: {_confidence[0]:.2f}")
 
     run(on_event=_on_event, on_frame=_on_frame)
