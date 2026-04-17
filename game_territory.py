@@ -61,6 +61,7 @@ TRAIL_FADE   = 8.0          # seconds for trail to fade completely
 EXPLORE_R    = 0.3          # LDA units — dwell radius for exploration detection
 EXPLORE_DIST = 1.5          # min distance from all centroids to flag exploration
 EXPLORE_DWELL = 4.0         # seconds to flag as candidate cluster
+CUE_DURATION  = 8.0         # seconds per class in auto-cue mode
 
 GRID_SPACING = 1.0          # LDA units between grid lines
 
@@ -265,15 +266,16 @@ def _fog_blobs(ix: int, iy: int) -> list[tuple[float, float, float, int]]:
     for _ in range(n):
         s, ox_f = _rnd(s);  ox = (ox_f - 0.5) * 0.9 * FOG_CELL
         s, oy_f = _rnd(s);  oy = (oy_f - 0.5) * 0.9 * FOG_CELL
-        s, r_f  = _rnd(s);  r  = 0.08 + r_f * 0.10
-        s, a_f  = _rnd(s);  a  = int(25 + a_f * 35)
+        s, r_f  = _rnd(s);  r  = 0.10 + r_f * 0.14
+        s, a_f  = _rnd(s);  a  = int(80 + a_f * 80)
         blobs.append((ox, oy, r, a))
     return blobs
 
 # ─── Territory state ──────────────────────────────────────────────────────────
 
 class TerritoryState:
-    def __init__(self) -> None:
+    def __init__(self, cls: int) -> None:
+        self.cls        = cls
         self.level      = 0
         self.pulse      = 0.0                           # animation phase
         # (game_time, np.ndarray[2]) — positions while player is inside circle
@@ -288,8 +290,14 @@ class TerritoryState:
     # -- called when new sample arrives (10 Hz) ---------------------------
 
     def on_sample(self, player_pos: np.ndarray, centroid: np.ndarray,
-                  now: float) -> None:
+                  now: float, label: int | None = None) -> None:
         if self.level >= 3:
+            return
+
+        # Label gate: wrong class resets dwell; None is neutral (no advance, no reset)
+        if isinstance(label, int) and label != self.cls:
+            self._dwell.clear()
+            self._good_since = None
             return
 
         inside = float(np.linalg.norm(player_pos - centroid)) < TERRITORY_R
@@ -416,8 +424,12 @@ class TerritoryGame:
         # Per-class centroid positions in 2D (updated by main loop)
         self._centroids: dict[int, np.ndarray | None] = {c: None for c in range(4)}
 
-        self._territories  = {c: TerritoryState()  for c in range(4)}
+        self._territories  = {c: TerritoryState(c) for c in range(4)}
         self._explore      = ExplorationTracker()
+
+        self._active_label: int | None = None   # cued intent (manual or auto)
+        self._auto_mode:    bool        = False
+        self._cue_elapsed:  float       = 0.0
 
         self._lda_method = "waiting"
         self._fonts_ready = False
@@ -438,9 +450,19 @@ class TerritoryGame:
 
     def tick(self, dt: float) -> None:
         self._game_time += dt
+
+        # Auto-cue cycling
+        if self._auto_mode:
+            self._cue_elapsed += dt
+            if self._cue_elapsed >= CUE_DURATION:
+                others = [c for c in range(4) if c != self._active_label]
+                self._active_label = int(np.random.choice(others))
+                self._cue_elapsed  = 0.0
+
         if not self._fonts_ready:
             self._font_big   = pygame.font.SysFont("monospace", 18, bold=True)
             self._font_small = pygame.font.SysFont("monospace", 13)
+            self._font_cue   = pygame.font.SysFont("monospace", 32, bold=True)
             self._fonts_ready = True
 
         # Animation ticks (60 Hz)
@@ -487,7 +509,7 @@ class TerritoryGame:
         for cls, terr in self._territories.items():
             cen = self._centroids.get(cls)
             if cen is not None:
-                terr.on_sample(smooth, cen, now)
+                terr.on_sample(smooth, cen, now, self._active_label)
 
         self._explore.on_sample(smooth, valid_centroids, now)
 
@@ -503,6 +525,7 @@ class TerritoryGame:
         self._draw_territories(screen, cam)
         self._draw_trail(screen, cam)
         self._draw_player(screen, cam)
+        self._draw_cue(screen)
         self._draw_hud(screen)
 
     # -- coordinate helper -------------------------------------------------
@@ -559,7 +582,7 @@ class TerritoryGame:
                     wp     = np.array([ix * FOG_CELL + ox, iy * FOG_CELL + oy])
                     sx, sy = self._w2s(wp, cam)
                     r_px   = max(1, int(r_world * WORLD_SCALE))
-                    pygame.draw.circle(self._fog_surf, (55, 55, 75, alpha),
+                    pygame.draw.circle(self._fog_surf, (90, 95, 130, alpha),
                                        (sx, sy), r_px)
 
         screen.blit(self._fog_surf, (0, 0))
@@ -650,6 +673,30 @@ class TerritoryGame:
         pygame.draw.circle(screen, color, (sx, sy), 10)
         pygame.draw.circle(screen, COL_WHITE, (sx - 3, sy - 3), 3)   # specular
 
+    # -- cue overlay -------------------------------------------------------
+
+    def _draw_cue(self, screen: pygame.Surface) -> None:
+        """'NOW: CLASS NAME' banner at top of viewport; countdown bar in auto mode."""
+        if not self._fonts_ready or self._active_label is None:
+            return
+        cls   = self._active_label
+        color = CLASS_COLORS[cls]
+        label = CLASS_NAMES[cls].upper().replace("_", " ")
+        surf  = self._font_cue.render(f"NOW:  {label}", True, color)
+        screen.blit(surf, ((WIN_W - surf.get_width()) // 2, 12))
+
+        if self._auto_mode:
+            progress = max(0.0, (CUE_DURATION - self._cue_elapsed) / CUE_DURATION)
+            bar_w, bar_h = 220, 6
+            bx = (WIN_W - bar_w) // 2
+            by = 12 + surf.get_height() + 5
+            pygame.draw.rect(screen, (35, 35, 55), (bx, by, bar_w, bar_h),
+                             border_radius=3)
+            filled = int(bar_w * progress)
+            if filled > 0:
+                pygame.draw.rect(screen, color, (bx, by, filled, bar_h),
+                                 border_radius=3)
+
     # -- exploration -------------------------------------------------------
 
     def _draw_exploration(self, screen: pygame.Surface, cam: np.ndarray) -> None:
@@ -725,13 +772,16 @@ class TerritoryGame:
             ls = self._font_big.render(f"Lv {level}", True, lv_col)
             screen.blit(ls, (bx + (box_w - ls.get_width()) // 2, y0 + 24))
 
-        # Bottom-left: position + LDA method
+        # Bottom-left: position + LDA method + mode
         info = (f"{self._lda_method}  "
                 f"pos ({self._player_pos[0]:.2f}, {self._player_pos[1]:.2f})"
                 if self._player_pos is not None
                 else self._lda_method)
         screen.blit(self._font_small.render(info, True, COL_DIMTEXT),
                     (10, VIEWPORT_H + 8))
+        mode_str = "Mode: AUTO" if self._auto_mode else "Mode: MANUAL"
+        screen.blit(self._font_small.render(mode_str, True, COL_DIMTEXT),
+                    (10, VIEWPORT_H + 24))
 
         # Bottom-right: exploration candidates count
         n = len(self._explore.candidates)
@@ -773,6 +823,28 @@ def run() -> None:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     _game.running = False
+                elif event.key == pygame.K_0:
+                    _game._active_label = None
+                    _game._auto_mode    = False
+                elif event.key == pygame.K_1:
+                    _game._active_label = 0
+                    _game._auto_mode    = False
+                elif event.key == pygame.K_2:
+                    _game._active_label = 1
+                    _game._auto_mode    = False
+                elif event.key == pygame.K_3:
+                    _game._active_label = 2
+                    _game._auto_mode    = False
+                elif event.key == pygame.K_4:
+                    _game._active_label = 3
+                    _game._auto_mode    = False
+                elif event.key == pygame.K_r:
+                    _game._auto_mode = not _game._auto_mode
+                    if _game._auto_mode:
+                        _game._active_label = int(np.random.randint(0, 4))
+                        _game._cue_elapsed  = 0.0
+                    else:
+                        _game._active_label = None
 
         # ── Snapshot ZMQ buffers ─────────────────────────────────────────
         with _zmq_lock:
@@ -820,5 +892,5 @@ def run() -> None:
 if __name__ == "__main__":
     print("Capture the Territory — BCI Game")
     print("Waiting for emulator on tcp://localhost:5555 …")
-    print("Q / Escape to quit\n")
+    print("Keys: 1-4 = cue class  |  0 = clear cue  |  R = toggle auto-cue  |  Q = quit\n")
     run()
