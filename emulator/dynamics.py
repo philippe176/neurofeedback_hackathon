@@ -1,5 +1,5 @@
 """
-Latent space dynamics for the brain emulator, version 2.
+Latent space dynamics for the brain emulator.
 
 State vector z (8-dimensional):
   dim 0    -> z_coarse   : coarse cluster signal (hands vs legs), never rotated
@@ -7,9 +7,10 @@ State vector z (8-dimensional):
   dims 3-4 -> z_strategy : user-controlled strategy state
   dims 5-7 -> z_noise    : slow random-walk noise
 
-The updated emulator uses per-class optimal strategy corners instead of a
-single shared optimum. The patient has to move toward and hold the active
-class corner with arrow keys while a spring pulls the strategy back to center.
+This version supports multiple strategy optima for a label. Each class is
+always anchored to a coarse cluster, while the exact strategy can pull the
+latent state toward a more specific centroid. Some optional strategies share a
+merge centroid, which makes those labels intentionally harder to distinguish.
 """
 
 from __future__ import annotations
@@ -19,29 +20,81 @@ import numpy as np
 from .config import DifficultyConfig
 
 
-# Class centroids in the 3-dim z_class subspace [coarse, fine_A, fine_B]
-CLASS_CENTROIDS = np.array(
+# Class-conditional strategy optima in the 2D strategy plane.
+OPTIMAL_STRATEGIES: dict[int, np.ndarray] = {
+    0: np.array(
+        [
+            [+0.50, +0.50],  # left hand primary
+            [+0.45, -0.20],  # left hand merge-style alternative
+        ],
+        dtype=float,
+    ),
+    1: np.array(
+        [
+            [-0.50, +0.50],  # right hand primary
+        ],
+        dtype=float,
+    ),
+    2: np.array(
+        [
+            [+0.50, -0.50],  # left leg primary
+        ],
+        dtype=float,
+    ),
+    3: np.array(
+        [
+            [-0.50, -0.50],  # right leg primary
+            [-0.45, +0.20],  # right leg merge-style alternative
+            [+0.15, -0.05],  # right leg alternate path
+        ],
+        dtype=float,
+    ),
+}
+
+_MERGE = np.array([0.0, 0.0, 0.0], dtype=float)
+
+# Strategy-specific class centroids in the z_class subspace [coarse, fine_a, fine_b].
+STRATEGY_CENTROIDS: dict[int, np.ndarray] = {
+    0: np.array(
+        [
+            [+2.0, +1.5, 0.0],  # left hand primary
+            _MERGE,             # merge-style confusion with class 3
+        ],
+        dtype=float,
+    ),
+    1: np.array(
+        [
+            [+2.0, -1.5, 0.0],  # right hand primary
+        ],
+        dtype=float,
+    ),
+    2: np.array(
+        [
+            [-2.0, 0.0, +1.5],  # left leg primary
+        ],
+        dtype=float,
+    ),
+    3: np.array(
+        [
+            [-2.0, 0.0, -1.5],  # right leg primary
+            _MERGE,             # merge-style confusion with class 0
+            [-2.0, 0.0, -1.5],  # alternate path, same class centroid
+        ],
+        dtype=float,
+    ),
+}
+
+# Coarse cluster anchors used when strategy quality is low.
+CLUSTER_CENTROIDS = np.array(
     [
-        [+2.0, +1.5, 0.0],   # left hand
-        [+2.0, -1.5, 0.0],   # right hand
-        [-2.0, 0.0, +1.5],   # left leg
-        [-2.0, 0.0, -1.5],   # right leg
+        [+2.0, 0.0, 0.0],   # left hand
+        [+2.0, 0.0, 0.0],   # right hand
+        [-2.0, 0.0, 0.0],   # left leg
+        [-2.0, 0.0, 0.0],   # right leg
     ],
     dtype=float,
 )
 
-# Per-class optimal strategy corners in the 2D strategy plane.
-OPTIMAL_STRATEGIES = np.array(
-    [
-        [+0.5, +0.5],   # left hand
-        [-0.5, +0.5],   # right hand
-        [+0.5, -0.5],   # left leg
-        [-0.5, -0.5],   # right leg
-    ],
-    dtype=float,
-)
-
-# Integration time constant: class_scale builds up over ~SCALE_TAU seconds
 SCALE_TAU = 3.0
 
 N_CLASS_DIMS = 3
@@ -66,9 +119,10 @@ class LatentDynamics:
 
     Strategy behavior:
     - arrow keys move z_strategy
-    - a spring always pulls z_strategy back toward (0, 0)
-    - each class has its own optimal corner
-    - the fine class dimensions become more readable near that corner
+    - a spring pulls z_strategy back toward (0, 0)
+    - each class has one or more strategy optima
+    - low strategy quality collapses a class toward its coarse cluster anchor
+    - high strategy quality reveals the strategy-specific class centroid
     """
 
     def __init__(self, config: DifficultyConfig, sample_rate: float = 10.0, seed: int = 42):
@@ -85,6 +139,7 @@ class LatentDynamics:
         self.current_class: int | None = None
         self._scale_integrated = 0.0
         self._noise_rng = rng
+        self._nearest_strategy_idx = 0
 
     def set_class(self, class_idx: int | None) -> None:
         self.current_class = class_idx
@@ -100,15 +155,25 @@ class LatentDynamics:
     def step(self) -> dict[str, object]:
         cfg = self.cfg
 
-        # Spring pull back to center. Releasing keys recenters the strategy.
+        # Evaluate the nearest strategy before the spring is applied so a held
+        # optimum gives the strongest pull toward its paired centroid.
+        if self.current_class is not None:
+            cls = self.current_class
+            optima = OPTIMAL_STRATEGIES[cls]
+            dists = np.linalg.norm(optima - self.z_strategy, axis=1)
+            self._nearest_strategy_idx = int(np.argmin(dists))
+            quality = float(np.exp(-2.5 * dists[self._nearest_strategy_idx]))
+
+            cluster_centroid = CLUSTER_CENTROIDS[cls]
+            strategy_centroid = STRATEGY_CENTROIDS[cls][self._nearest_strategy_idx]
+            effective_centroid = cluster_centroid + quality * (strategy_centroid - cluster_centroid)
+            self.z_class += cfg.class_pull_strength * (effective_centroid - self.z_class)
+        else:
+            self._nearest_strategy_idx = 0
+            self.z_class *= 1.0 - cfg.class_pull_strength * 0.4
+
         decay = np.exp(-cfg.spring_rate * self.dt)
         self.z_strategy = self.z_strategy * decay
-
-        if self.current_class is not None:
-            target = CLASS_CENTROIDS[self.current_class]
-            self.z_class += cfg.class_pull_strength * (target - self.z_class)
-        else:
-            self.z_class *= 1.0 - cfg.class_pull_strength * 0.4
 
         self.z_class += self._noise_rng.normal(0.0, cfg.latent_noise_std, N_CLASS_DIMS)
         self.z_noise = 0.85 * self.z_noise + self._noise_rng.normal(0.0, 0.25, N_NOISE_DIMS)
@@ -124,6 +189,7 @@ class LatentDynamics:
             "z_strategy": self.z_strategy.copy(),
             "z_noise": self.z_noise.copy(),
             "current_class": self.current_class,
+            "nearest_strategy_idx": self._nearest_strategy_idx,
             "strategy_quality": self.strategy_quality,
             "class_scale": self.class_scale,
             "t": self.t,
@@ -135,10 +201,12 @@ class LatentDynamics:
 
         Dim 0 is never rotated, so the coarse hands-vs-legs split remains.
         Fine dimensions rotate into noise depending on the distance from the
-        active class's optimal strategy corner.
+        nearest active-class strategy optimum.
         """
         if self.current_class is not None:
-            err = self.z_strategy - OPTIMAL_STRATEGIES[self.current_class]
+            cls = self.current_class
+            target = OPTIMAL_STRATEGIES[cls][self._nearest_strategy_idx]
+            err = self.z_strategy - target
         else:
             err = np.array([1.0, 1.0], dtype=float)
 
@@ -161,11 +229,12 @@ class LatentDynamics:
 
     @property
     def strategy_quality(self) -> float:
-        """Quality is 1 at the active class optimum and 0 with no active class."""
+        """Quality is 1 at the nearest active-class optimum and 0 with no class."""
         if self.current_class is None:
             return 0.0
-        error = np.linalg.norm(self.z_strategy - OPTIMAL_STRATEGIES[self.current_class])
-        return float(np.exp(-2.5 * error))
+        optima = OPTIMAL_STRATEGIES[self.current_class]
+        dists = np.linalg.norm(optima - self.z_strategy, axis=1)
+        return float(np.exp(-2.5 * dists.min()))
 
     @property
     def class_scale(self) -> float:
@@ -173,8 +242,17 @@ class LatentDynamics:
         return float(self._scale_integrated)
 
     @property
+    def optimal_strategies(self) -> np.ndarray:
+        """All strategy optima for the active class. Shape (K, 2)."""
+        if self.current_class is None:
+            return np.zeros((0, 2), dtype=float)
+        return OPTIMAL_STRATEGIES[self.current_class].copy()
+
+    @property
     def optimal_strategy(self) -> np.ndarray:
-        """Return the active class's optimal strategy corner, or zeros at rest."""
+        """Nearest strategy optimum for the active class, or zeros at rest."""
         if self.current_class is None:
             return np.zeros(2, dtype=float)
-        return OPTIMAL_STRATEGIES[self.current_class].copy()
+        optima = OPTIMAL_STRATEGIES[self.current_class]
+        dists = np.linalg.norm(optima - self.z_strategy, axis=1)
+        return optima[int(np.argmin(dists))].copy()

@@ -24,6 +24,8 @@ from typing import Any, Protocol
 import numpy as np
 import torch
 
+from game.config import LevelPolicy, RhythmGameConfig
+from game.rewards import GameRewardProvider
 from model.config import ModelConfig
 from model.network import build_decoder
 from model.projectors import build_projector
@@ -146,7 +148,9 @@ class EmulatorBridge:
 
         self.model_cfg = ModelConfig(input_dim=None)
         self.device = torch.device("cpu")
-        self.reward_provider = ProgrammaticReward(self.model_cfg)
+        self.programmatic_reward = ProgrammaticReward(self.model_cfg)
+        self.game_reward = self._make_game_reward_provider()
+        self.reward_provider = self.programmatic_reward
         self.model = None
         self.trainer: OnlineTrainer | None = None
         self.projector = build_projector(
@@ -235,10 +239,11 @@ class EmulatorBridge:
         normalized = str(training_phase).strip().lower()
         if normalized not in AVAILABLE_TRAINING_PHASES:
             raise ValueError(f"Unknown training phase: {training_phase}")
+        previous = self.training_phase
         self.training_phase = normalized
 
-        if self.trainer is not None:
-            self.trainer.frozen = (normalized == "exploration")
+        if previous == "calibration" and normalized in {"feedback", "exploration"}:
+            self.game_reward = self._make_game_reward_provider()
 
         if normalized == "exploration":
             self._exploration_penultimate = deque(maxlen=self.exploration_max_points)
@@ -249,6 +254,8 @@ class EmulatorBridge:
         else:
             self._exploration_result = None
 
+        self._sync_reward_provider()
+
     def set_exploration_class(self, class_idx: int) -> None:
         if class_idx not in range(4):
             raise ValueError(f"Invalid class index: {class_idx}")
@@ -256,6 +263,43 @@ class EmulatorBridge:
         self._exploration_penultimate = deque(maxlen=self.exploration_max_points)
         self._exploration_last_analysis = 0
         self._exploration_result = None
+
+    def _build_game_config(self) -> RhythmGameConfig:
+        fixed_level = LevelPolicy(
+            hit_window_s=0.75,
+            beat_interval_s=2.4,
+            min_confidence=0.36,
+            min_margin=0.0,
+        )
+        return RhythmGameConfig(
+            n_classes=self.model_cfg.n_classes,
+            prompt_duration_s=2.0,
+            base_hit_window_s=fixed_level.hit_window_s,
+            base_beat_interval_s=fixed_level.beat_interval_s,
+            enable_adaptation=False,
+            reward_min=self.model_cfg.reward_min,
+            reward_max=self.model_cfg.reward_max,
+            levels=(fixed_level,),
+            start_level=0,
+        )
+
+    def _make_game_reward_provider(self) -> GameRewardProvider:
+        return GameRewardProvider(model_cfg=self.model_cfg, game_cfg=self._build_game_config())
+
+    def _active_game_provider(self) -> GameRewardProvider | None:
+        if isinstance(self.reward_provider, GameRewardProvider):
+            return self.reward_provider
+        return None
+
+    def _sync_reward_provider(self) -> None:
+        self.reward_provider = (
+            self.game_reward
+            if self.training_phase in {"feedback", "exploration"}
+            else self.programmatic_reward
+        )
+        if self.trainer is not None:
+            self.trainer.reward_provider = self.reward_provider
+            self.trainer.frozen = (self.training_phase == "exploration")
 
     def set_model(self, model_type: str) -> None:
         normalized = str(model_type).strip().lower()
@@ -383,6 +427,7 @@ class EmulatorBridge:
             "viz_name": self.viz_name,
             "available_viz_methods": self.available_viz_methods(),
             "session": session,
+            "game": self.game_snapshot(),
             "calibration": calibration,
             "coach": coach,
             "calibration_samples_per_class": self.calibration_samples_per_class,
@@ -457,7 +502,7 @@ class EmulatorBridge:
 
     def session_snapshot(self) -> dict[str, Any]:
         labeled_samples = sum(1 for label in self._labels if label is not None)
-        return {
+        snapshot = {
             "rolling_reward": self._rolling_mean(self._rewards),
             "rolling_alignment": self._compute_recent_alignment(),
             "rolling_confidence": self._rolling_mean(self._confs),
@@ -467,6 +512,10 @@ class EmulatorBridge:
             "total_samples": self.sample_count,
             "labeled_samples": labeled_samples,
         }
+        game = self.game_snapshot()
+        if game is not None:
+            snapshot["game"] = game
+        return snapshot
 
     def calibration_snapshot(self) -> dict[str, Any]:
         counts_by_class = self._calibration_bank_counts()
@@ -539,6 +588,9 @@ class EmulatorBridge:
                 "score_label": "Decoder Match",
                 "target_margin": 0.0,
             }
+
+        if self.training_phase in {"feedback", "exploration"}:
+            return self._build_game_coach_snapshot()
 
         current_label = self._labels[-1]
         predicted_class = self._preds[-1]
@@ -637,6 +689,84 @@ class EmulatorBridge:
             "target_margin": target_margin,
         }
 
+    def _build_game_coach_snapshot(self) -> dict[str, Any]:
+        game = self.game_snapshot()
+        if not game:
+            return {
+                "state": "idle",
+                "headline": "Waiting for game timing",
+                "message": "Live samples will start the prompt sequence as soon as the stream is active.",
+                "score": 0.0,
+                "score_label": "Prompt Match",
+                "target_margin": 0.0,
+            }
+
+        target_class = game["target_class"]
+        predicted_class = self._preds[-1] if self._preds else None
+        probabilities = self._last_probabilities()
+        target_prob = float(probabilities[int(target_class)]) if target_class is not None else 0.0
+        target_margin = self._target_margin(probabilities, target_class)
+        hit_rate = float(game.get("hit_rate") or 0.0)
+        score = float(np.clip(0.65 * target_prob + 0.20 * hit_rate + 0.15 * self._compute_recent_alignment(), 0.0, 1.0))
+
+        target_name = self._class_name(target_class)
+        predicted_name = self._class_name(predicted_class)
+        in_window = bool(game.get("in_window"))
+        seconds_to_window_start = game.get("seconds_to_window_start")
+        feedback = game.get("last_feedback") or {}
+
+        if self.training_phase == "exploration":
+            if predicted_class == target_class and target_prob >= 0.75:
+                state = "good"
+                headline = "Strong frozen readout"
+                message = f"Frozen model reliably reads {target_name}. Keep this strategy."
+            elif predicted_class == target_class:
+                state = "hold"
+                headline = "Useful exploration pattern"
+                message = f"The frozen model reads {target_name}. Hold it a bit longer and compare nearby strategies."
+            else:
+                state = "adjust"
+                headline = "Search a different strategy"
+                message = f"Frozen model reads {predicted_name}, not {target_name}. Shift your strategy and watch the map move."
+            return {
+                "state": state,
+                "headline": headline,
+                "message": message,
+                "score": score,
+                "score_label": "Frozen Readout",
+                "target_margin": target_margin,
+            }
+
+        if not in_window and isinstance(seconds_to_window_start, (int, float)) and seconds_to_window_start > 0.12:
+            state = "hold"
+            headline = f"Prepare {target_name}"
+            message = f"Next scoring window opens in {seconds_to_window_start:.2f}s. Line up the strategy before the hit window."
+        elif feedback.get("timing_hit"):
+            state = "good"
+            headline = "Nice hit"
+            message = f"You matched {target_name} in the scoring window. Keep that strategy for the next beat."
+        elif predicted_class == target_class:
+            state = "hold"
+            headline = "Model has the right class"
+            message = f"Decoder reads {target_name}. Hold steady and try to land it inside the hit window."
+        elif target_margin > -0.10:
+            state = "adjust"
+            headline = "Almost there"
+            message = f"Prompt wants {target_name}, but the readout leans toward {predicted_name}. Nudge the strategy now."
+        else:
+            state = "recover"
+            headline = "Change strategy"
+            message = f"Prompt wants {target_name}. The decoder still reads {predicted_name}, so keep adjusting before the window closes."
+
+        return {
+            "state": state,
+            "headline": headline,
+            "message": message,
+            "score": score,
+            "score_label": "Prompt Match",
+            "target_margin": target_margin,
+        }
+
     def _initialize_decoder(self) -> None:
         self.model = build_decoder(self.model_type, self.model_cfg)
         self.trainer = OnlineTrainer(
@@ -645,7 +775,7 @@ class EmulatorBridge:
             reward_provider=self.reward_provider,
             device=self.device,
         )
-        self.trainer.frozen = (self.training_phase == "exploration")
+        self._sync_reward_provider()
 
     def _ensure_decoder_ready(self, input_dim: int) -> None:
         input_dim = int(input_dim)
@@ -717,9 +847,10 @@ class EmulatorBridge:
         self._class_scales.append(float(sample.class_scale or 0.0))
         self._strategy_qualities.append(float(sample.strategy_quality or 0.0))
 
-        target_margin = self._target_margin(result.probabilities, sample.label)
+        feedback_target = self._feedback_target_class(sample, result)
+        target_margin = self._target_margin(result.probabilities, feedback_target)
         self._target_margins.append(float(target_margin))
-        agreement = 1.0 if sample.label is not None and int(sample.label) == int(result.predicted_class) else 0.0
+        agreement = 1.0 if feedback_target is not None and int(feedback_target) == int(result.predicted_class) else 0.0
         self._agreements.append(agreement)
 
         if result.training and result.training.update_applied:
@@ -809,13 +940,9 @@ class EmulatorBridge:
         cluster_points, cluster_labels = self._cluster_display_points()
         session = self.session_snapshot()
         calibration = self.calibration_snapshot()
-        coach = self._build_coach_snapshot(
-            current_label=sample.label,
-            predicted_class=int(result.predicted_class),
-            probabilities=result.probabilities,
-            calibration=calibration,
-            session=session,
-        )
+        game = self.game_snapshot(timestamp=sample.timestamp)
+        intended_class = self._ui_target_class(sample, result, game)
+        coach = self.coach_snapshot()
         zone = self._zone_snapshot(centroids)
 
         return {
@@ -823,8 +950,12 @@ class EmulatorBridge:
             "source_sample_idx": self.last_source_sample_idx,
             "timestamp": sample.timestamp,
             "stream": self.stream_snapshot(),
+            "intended_class": intended_class,
+            "intended_class_name": self._class_name(intended_class),
             "current_class": sample.label,
             "current_class_name": self._class_name(sample.label),
+            "emulator_label": sample.label,
+            "emulator_label_name": self._class_name(sample.label),
             "difficulty": self.difficulty,
             "difficulty_name": self.difficulty_name,
             "training_phase": self.training_phase,
@@ -872,6 +1003,7 @@ class EmulatorBridge:
             "transition_samples_remaining": self._transition_samples_remaining,
             "graph_frozen": self.training_phase != "calibration",
             "session": session,
+            "game": game,
             "calibration": calibration,
             "coach": coach,
             "training": {
@@ -895,13 +1027,18 @@ class EmulatorBridge:
         }
 
     def _build_waiting_payload(self) -> dict[str, Any]:
+        game = self.game_snapshot()
         return {
             "sample_idx": self.sample_count,
             "source_sample_idx": self.last_source_sample_idx,
             "timestamp": self.last_stream_timestamp,
             "stream": self.stream_snapshot(),
+            "intended_class": None,
+            "intended_class_name": "Waiting",
             "current_class": self.current_class,
             "current_class_name": self._class_name(self.current_class),
+            "emulator_label": self.current_class,
+            "emulator_label_name": self._class_name(self.current_class),
             "difficulty": self.difficulty,
             "difficulty_name": self.difficulty_name,
             "training_phase": self.training_phase,
@@ -952,6 +1089,7 @@ class EmulatorBridge:
             "transition_samples_remaining": self._transition_samples_remaining,
             "graph_frozen": self.training_phase != "calibration",
             "session": self.session_snapshot(),
+            "game": game,
             "calibration": self.calibration_snapshot(),
             "coach": self.coach_snapshot(),
             "training": {
@@ -982,6 +1120,7 @@ class EmulatorBridge:
         payload["transition_ignored"] = self._transition_ignored
         payload["transition_samples_remaining"] = self._transition_samples_remaining
         payload["session"] = self.session_snapshot()
+        payload["game"] = self.game_snapshot()
         payload["calibration"] = self.calibration_snapshot()
         payload["coach"] = self.coach_snapshot()
         payload["training"] = {
@@ -1300,6 +1439,74 @@ class EmulatorBridge:
         if self.last_sample_wall_time is None:
             return None
         return max(0.0, time.time() - self.last_sample_wall_time)
+
+    def game_snapshot(self, timestamp: float | None = None) -> dict[str, Any] | None:
+        if self.training_phase not in {"feedback", "exploration"}:
+            return None
+
+        provider = self._active_game_provider()
+        if provider is None:
+            return None
+
+        ts = timestamp if timestamp is not None else self.last_stream_timestamp
+        if ts is None:
+            return None
+
+        preview = provider.preview(float(ts))
+        session = provider.session.snapshot()
+        feedback = provider.last_feedback
+
+        return {
+            "prompt_id": preview.prompt_id,
+            "target_class": preview.target_class,
+            "target_class_name": self._class_name(preview.target_class),
+            "next_target_class": preview.next_target_class,
+            "next_target_class_name": self._class_name(preview.next_target_class),
+            "in_window": bool(preview.in_window),
+            "prompt_progress": float(preview.prompt_progress),
+            "seconds_to_window_start": float(preview.seconds_to_window_start),
+            "seconds_to_prompt_end": float(preview.seconds_to_prompt_end),
+            "seconds_to_next_prompt_start": float(preview.seconds_to_next_prompt_start),
+            "level": int(session["level"]),
+            "streak": int(session["streak"]),
+            "best_streak": int(session["best_streak"]),
+            "total_prompts": int(session["total_prompts"]),
+            "total_hits": int(session["total_hits"]),
+            "hit_rate": float(session["hit_rate"]),
+            "last_feedback": (
+                {
+                    "predicted_class": feedback.predicted_class,
+                    "predicted_class_name": self._class_name(feedback.predicted_class),
+                    "confidence": float(feedback.confidence),
+                    "margin": float(feedback.margin),
+                    "label_correct": bool(feedback.label_correct),
+                    "timing_hit": bool(feedback.timing_hit),
+                    "timing_error_s": float(feedback.timing_error_s),
+                    "hit": bool(feedback.hit),
+                    "reward": float(feedback.reward),
+                    "components": dict(feedback.components),
+                }
+                if feedback is not None
+                else None
+            ),
+        }
+
+    def _feedback_target_class(self, sample: StreamSample, result: InferenceStep) -> int | None:
+        if self.training_phase in {"feedback", "exploration"} and result.game_target_class is not None:
+            return int(result.game_target_class)
+        if sample.label is None:
+            return None
+        return int(sample.label)
+
+    def _ui_target_class(
+        self,
+        sample: StreamSample,
+        result: InferenceStep,
+        game: dict[str, Any] | None,
+    ) -> int | None:
+        if game is not None and game.get("target_class") is not None:
+            return int(game["target_class"])
+        return self._feedback_target_class(sample, result)
 
     def _class_name(self, class_idx: int | None) -> str:
         if class_idx is None:

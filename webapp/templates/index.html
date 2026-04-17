@@ -162,7 +162,7 @@
                 <!-- Status cards row -->
                 <div class="status-grid">
                     <article class="signal-card" id="card-intended">
-                        <span class="card-label">Task You Are Sending</span>
+                        <span id="intended-task-label" class="card-label">Task You Are Sending</span>
                         <h3 id="intended-task" class="card-value">Waiting</h3>
                         <p id="intended-task-subtitle" class="card-copy">
                             Choose a task in the emulator with 1-4.
@@ -217,7 +217,7 @@
                     </section>
 
                     <section class="panel" id="signal-panel">
-                        <h2>Signal Health</h2>
+                        <h2>Signal + Game</h2>
                         <div class="key-metric">
                             <span class="metric-label">Signal Score</span>
                             <span id="signal-score" class="metric-value">--</span>
@@ -229,6 +229,30 @@
                         <div class="key-metric">
                             <span class="metric-label">Confidence</span>
                             <span id="confidence" class="metric-value">--</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Prompt Target</span>
+                            <span id="game-target" class="metric-value">--</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Next Prompt</span>
+                            <span id="game-next" class="metric-value">--</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Window</span>
+                            <span id="game-window" class="metric-value">--</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Streak</span>
+                            <span id="game-streak" class="metric-value">--</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Level</span>
+                            <span id="game-level" class="metric-value">--</span>
+                        </div>
+                        <div class="key-metric">
+                            <span class="metric-label">Hit Rate</span>
+                            <span id="game-hit-rate" class="metric-value">--</span>
                         </div>
                     </section>
                 </div>

@@ -11,6 +11,8 @@ Controls
 """
 
 import sys
+import termios
+import tty
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -18,13 +20,6 @@ import numpy as np
 
 from .config import CLASS_COLORS, CLASS_NAMES, DIFFICULTIES
 from .emulator import BrainEmulator
-
-try:
-    import termios
-    import tty
-except ImportError:  # pragma: no cover - Windows compatibility
-    termios = None
-    tty = None
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +39,7 @@ def _lerp_color(c1, c2, t):
 # ---------------------------------------------------------------------------
 
 def run_emulator_gui(
-    difficulty: str = "d1",
+    difficulty: str = "medium",
     n_dims: int = 256,
     port: int = 5555,
 ) -> None:
@@ -56,18 +51,12 @@ def run_emulator_gui(
     print(f"  Difficulty : {difficulty}   |   Dims : {n_dims}   |   Rate : {emulator.sample_rate} Hz")
     print(f"{'='*55}")
     print("  Keys : 1=left_hand  2=right_hand  3=left_leg  4=right_leg  0=rest")
-    print("  Arrows : strategy navigation   Space : bookmark position   ESC/Q : quit\n")
+    print("  Arrows : strategy navigation   ESC/Q : quit\n")
 
     root = tk.Tk()
     root.title(f"Brain Emulator  [{difficulty.upper()}]")
     root.resizable(False, False)
     root.configure(bg="#0c0c14")
-
-    def on_close():
-        emulator.close()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
 
     W, H = 660, 540
     canvas = tk.Canvas(root, width=W, height=H, bg="#0c0c14", highlightthickness=0)
@@ -94,9 +83,6 @@ def run_emulator_gui(
 
     strategy_trail: list[np.ndarray] = []
     TRAIL_LEN = 40
-    show_optimal = tk.BooleanVar(value=True)
-    saved_marks: dict[int | None, list[np.ndarray]] = {}   # class → list of z_strategy snapshots
-
 
     # ---- Key bindings ----
     def on_key_press(event):
@@ -109,18 +95,12 @@ def run_emulator_gui(
             emulator.set_class(CLASS_KEY_MAP[k])
         if k in ARROW_MAP:
             pressed_arrows.add(k)
-        if k == "space":
-            cls = emulator.dynamics.current_class
-            saved_marks.setdefault(cls, []).append(
-                emulator.dynamics.z_strategy.copy()
-            )
 
     def on_key_release(event):
         pressed_arrows.discard(event.keysym)
 
     root.bind("<KeyPress>",   on_key_press)
     root.bind("<KeyRelease>", on_key_release)
-
     root.focus_set()
 
     # ---- Layout constants ----
@@ -133,18 +113,6 @@ def run_emulator_gui(
     STX      = PAD + PAD_SIZE + 20   # stats panel x
     STW      = W - STX - PAD
 
-    # Toggle checkbox for the optimal strategy ring — sits in the bottom-left corner.
-    btn_opt = tk.Checkbutton(
-        canvas, text="Show optimal",
-        variable=show_optimal,
-        bg="#0c0c14", fg="#a0a0b4",
-        selectcolor="#1e1e2e",
-        activebackground="#0c0c14", activeforeground="#cccccc",
-        font=("Courier", 10),
-        bd=0, highlightthickness=0,
-    )
-    canvas.create_window(PAD + 8, H - 26, anchor="w", window=btn_opt)
-
     # ---- Draw loop (60 fps) ----
     def draw():
         canvas.delete("dynamic")   # clear all dynamic elements each frame
@@ -154,6 +122,7 @@ def run_emulator_gui(
         sq  = dyn.strategy_quality
         zc  = dyn.z_class
         zs  = dyn.z_strategy
+        opt = dyn.optimal_strategy
 
         # -- Header --
         canvas.create_text(
@@ -197,8 +166,7 @@ def run_emulator_gui(
         # -- Strategy pad --
         canvas.create_rectangle(PAD, PAD_TOP, PAD+PAD_SIZE, PAD_TOP+PAD_SIZE,
                                  fill="#191928", outline="#373760", width=2, tags="dynamic")
-        nearest_opt = dyn.optimal_strategy
-        opt_str = f"({nearest_opt[0]:+.1f}, {nearest_opt[1]:+.1f})" if cur is not None else "—"
+        opt_str = f"({opt[0]:+.1f}, {opt[1]:+.1f})" if cur is not None else "—"
         canvas.create_text(PAD, PAD_TOP - 16, anchor="w",
                            text=f"STRATEGY  (arrow keys)  — target: {opt_str}",
                            font=f_small, fill="#64648c", tags="dynamic")
@@ -206,24 +174,14 @@ def run_emulator_gui(
         canvas.create_line(PAD+10, PCY, PAD+PAD_SIZE-10, PCY, fill="#282840", tags="dynamic")
         canvas.create_line(PCX, PAD_TOP+10, PCX, PAD_TOP+PAD_SIZE-10, fill="#282840", tags="dynamic")
 
-        # One target ring per optimal strategy for the active class.
-        # Merge strategies (index > 0 for class 0, index 1 for class 3) are drawn
-        # in white to hint they are special.
-        if show_optimal.get():
-            all_opts = dyn.optimal_strategies   # shape (K, 2) or (0, 2)
-            from .dynamics import STRATEGY_CENTROIDS, _MERGE
-            for k, pos in enumerate(all_opts):
-                tx = int(PCX + pos[0] * HALF)
-                ty = int(PCY - pos[1] * HALF)
-                tr = 12
-                # Detect merge strategy: centroid == _MERGE
-                cent = STRATEGY_CENTROIDS[cur][k] if cur is not None else None
-                is_merge = (cent is not None and np.allclose(cent, _MERGE))
-                ring_col = "#c8c8c8" if is_merge else (
-                    _rgb(*CLASS_COLORS[cur]) if cur is not None else "#3a3a5a"
-                )
-                canvas.create_oval(tx-tr, ty-tr, tx+tr, ty+tr,
-                                   outline=ring_col, width=2, tags="dynamic")
+        # Target ring at active class's optimal corner (or centre if rest)
+        opt = dyn.optimal_strategy
+        tx  = int(PCX + opt[0] * HALF)
+        ty  = int(PCY - opt[1] * HALF)
+        tr  = 12
+        ring_col = _rgb(*CLASS_COLORS[cur]) if cur is not None else "#3a3a5a"
+        canvas.create_oval(tx-tr, ty-tr, tx+tr, ty+tr,
+                           outline=ring_col, width=2, tags="dynamic")
 
         # Trail
         for i, s in enumerate(strategy_trail):
@@ -233,17 +191,6 @@ def run_emulator_gui(
             sx   = int(PCX + s[0] * HALF)
             sy   = int(PCY - s[1] * HALF)
             canvas.create_oval(sx-r, sy-r, sx+r, sy+r, fill=col, outline="", tags="dynamic")
-
-        # Saved marks (space bar) — only show marks for the current active class
-        col = _rgb(*CLASS_COLORS[cur])
-        for m in saved_marks.get(cur, []):
-            mx = int(PCX + m[0] * HALF)
-            my = int(PCY - m[1] * HALF)
-            r  = 6
-            canvas.create_polygon(
-                mx, my-r, mx+r, my, mx, my+r, mx-r, my,
-                fill=col, outline="#ffffff", width=1, tags="dynamic",
-            )
 
         # Current dot
         sx = int(PCX + zs[0] * HALF)
@@ -271,15 +218,12 @@ def run_emulator_gui(
                                text=f"{value:.2f}", font=f_small, fill=color,
                                tags="dynamic")
 
+        sq_col = _rgb(*_lerp_color((200, 60, 60), (60, 200, 60), sq))
         sc     = dyn.class_scale
         sc_col = _rgb(*_lerp_color((200, 60, 60), (60, 200, 60), sc))
 
-        if show_optimal.get():
-            sq_col = _rgb(*_lerp_color((200, 60, 60), (60, 200, 60), sq))
-            _bar("Strategy quality  (reach class corner)", sq, 14,  sq_col)
-            _bar("Signal strength   (hold quality)",     sc, 56,  sc_col)
-        else:
-            _bar("Signal strength   (hold quality)",     sc, 14,  sc_col)
+        _bar("Strategy quality  (reach class corner)", sq, 14,  sq_col)
+        _bar("Signal strength   (hold quality)",     sc, 56,  sc_col)
 
         # z values
         canvas.create_text(STX+10, PAD_TOP+102, anchor="w",
@@ -327,10 +271,6 @@ def run_emulator_gui(
     sample()
 
     # Suppress terminal echo so arrow/number keys don't print garbage
-    if termios is None or tty is None or not sys.stdin.isatty():
-        root.mainloop()
-        return
-
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:

@@ -244,6 +244,44 @@ def test_emulator_bridge_freezes_model_and_graph_outside_calibration():
     assert last["training"]["num_updates"] == updates_after_feedback  # frozen
 
 
+def test_emulator_bridge_switches_reward_provider_with_game_phases():
+    from game.rewards import GameRewardProvider
+    from model.reward import ProgrammaticReward
+    from webapp.emulator_bridge import EmulatorBridge
+
+    bridge = EmulatorBridge(receiver=FakeReceiver())
+
+    assert isinstance(bridge.reward_provider, ProgrammaticReward)
+
+    bridge.set_training_phase("feedback")
+    assert isinstance(bridge.reward_provider, GameRewardProvider)
+
+    bridge.set_training_phase("exploration")
+    assert isinstance(bridge.reward_provider, GameRewardProvider)
+
+    bridge.set_training_phase("calibration")
+    assert isinstance(bridge.reward_provider, ProgrammaticReward)
+
+
+def test_feedback_phase_uses_game_prompt_for_ui_target():
+    from webapp.emulator_bridge import EmulatorBridge
+
+    receiver = FakeReceiver(make_training_samples(n_per_class=12))
+    bridge = EmulatorBridge(receiver=receiver, transition_ignore_samples=0)
+    bridge.set_training_phase("feedback")
+
+    last = None
+    for _ in range(8):
+        last = bridge.step(timeout=0.0)
+
+    assert last is not None
+    assert last["game"] is not None
+    assert last["intended_class"] == last["game"]["target_class"]
+    assert last["intended_class_name"] == last["game"]["target_class_name"]
+    assert last["coach"]["score_label"] == "Prompt Match"
+    assert "game" in last["session"]
+
+
 def test_emulator_bridge_exploration_scores_points_with_frozen_model():
     from webapp.emulator_bridge import EmulatorBridge
 

@@ -41,6 +41,7 @@ let streamState = {};
 let calibrationState = {};
 let coachState = {};
 let sessionState = {};
+let gameState = null;
 let latestData = null;
 let hasCustomSaveName = false;
 let explorationTargetClass = 0;
@@ -236,6 +237,9 @@ function syncRuntimeState(data) {
     if (data.exploration !== undefined) {
         explorationState = data.exploration;
     }
+    if (data.game !== undefined) {
+        gameState = data.game;
+    }
 }
 
 function syncTrainingState(data) {
@@ -353,11 +357,26 @@ function updateCentroidSlider() {
 function updateStatusCards() {
     const data = latestData || {};
     const currentName = data.current_class_name || 'Waiting for stream';
+    const intendedName = data.intended_class_name || (gameState && gameState.target_class_name) || currentName;
     const predictedName = data.predicted_class_name || 'Waiting';
     const hasLabel = data.current_class !== undefined && data.current_class !== null;
+    const usingGame = trainingPhase !== 'calibration' && !!gameState;
 
-    document.getElementById('intended-task').textContent = hasLabel ? currentName : 'Pick a task';
-    if (data.transition_ignored && typeof data.transition_samples_remaining === 'number') {
+    document.getElementById('intended-task-label').textContent = usingGame ? 'Task To Match' : 'Task You Are Sending';
+    document.getElementById('intended-task').textContent = usingGame ? intendedName : (hasLabel ? currentName : 'Pick a task');
+    if (usingGame && gameState) {
+        const nextName = gameState.next_target_class_name || 'Unknown';
+        if (gameState.in_window) {
+            document.getElementById('intended-task-subtitle').textContent =
+                `Scoring window is open now. Next prompt: ${nextName}.`;
+        } else if (typeof gameState.seconds_to_window_start === 'number') {
+            document.getElementById('intended-task-subtitle').textContent =
+                `Window opens in ${gameState.seconds_to_window_start.toFixed(2)}s. Next prompt: ${nextName}.`;
+        } else {
+            document.getElementById('intended-task-subtitle').textContent =
+                'Follow the game prompt and adjust until the decoder reads the same class.';
+        }
+    } else if (data.transition_ignored && typeof data.transition_samples_remaining === 'number') {
         document.getElementById('intended-task-subtitle').textContent =
             `New label settling in. ${data.transition_samples_remaining} more samples are ignored before this class enters calibration/exploration.`;
     } else {
@@ -369,7 +388,11 @@ function updateStatusCards() {
     document.getElementById('predicted-task').textContent = predictedName;
     if (!latestData || latestData.predicted_class === null || latestData.predicted_class === undefined) {
         document.getElementById('predicted-task-subtitle').textContent = 'The prediction will appear as soon as live samples arrive.';
-    } else if (hasLabel && latestData.predicted_class === latestData.current_class) {
+    } else if (
+        data.intended_class !== null
+        && data.intended_class !== undefined
+        && latestData.predicted_class === data.intended_class
+    ) {
         document.getElementById('predicted-task-subtitle').textContent = 'The decoder agrees with your intended task.';
     } else if (hasLabel) {
         document.getElementById('predicted-task-subtitle').textContent = 'If this is not the task you want, change strategy until the readout moves.';
@@ -428,6 +451,7 @@ function updateCalibrationPanel() {
 
 function updateSignalPanel() {
     const data = latestData || {};
+    const game = gameState || (sessionState && sessionState.game) || null;
     document.getElementById('signal-score').textContent = typeof data.signal_score === 'number'
         ? `${(data.signal_score * 100).toFixed(0)}%`
         : '--';
@@ -446,6 +470,27 @@ function updateSignalPanel() {
     document.getElementById('rolling-reward').textContent = typeof sessionState.rolling_reward === 'number'
         ? `${(sessionState.rolling_reward * 100).toFixed(0)}%`
         : '--';
+    document.getElementById('game-target').textContent = game ? (game.target_class_name || '--') : '--';
+    document.getElementById('game-next').textContent = game ? (game.next_target_class_name || '--') : '--';
+    if (game) {
+        if (game.in_window) {
+            document.getElementById('game-window').textContent = 'Open now';
+        } else if (typeof game.seconds_to_window_start === 'number') {
+            document.getElementById('game-window').textContent = `${game.seconds_to_window_start.toFixed(2)}s`;
+        } else {
+            document.getElementById('game-window').textContent = '--';
+        }
+        document.getElementById('game-streak').textContent = `${game.streak ?? 0}`;
+        document.getElementById('game-level').textContent = `${game.level ?? '--'}`;
+        document.getElementById('game-hit-rate').textContent = typeof game.hit_rate === 'number'
+            ? `${(game.hit_rate * 100).toFixed(0)}%`
+            : '--';
+    } else {
+        document.getElementById('game-window').textContent = '--';
+        document.getElementById('game-streak').textContent = '--';
+        document.getElementById('game-level').textContent = '--';
+        document.getElementById('game-hit-rate').textContent = '--';
+    }
 }
 
 function updateTrainingPanel() {
@@ -508,6 +553,7 @@ async function resetDecoder() {
         calibrationState = {};
         coachState = {};
         sessionState = {};
+        gameState = null;
         explorationPulseCount = 0;
         explorationPulseUntilMs = 0;
         if (explorationPulseTimer) {
