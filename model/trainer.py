@@ -44,6 +44,7 @@ class OnlineTrainer:
         self.num_updates = 0
         self.labeled_seen = 0
 
+        self.frozen = False
         self.reward_baseline = 0.0
         self._baseline_initialized = False
 
@@ -125,6 +126,8 @@ class OnlineTrainer:
         )
 
     def _should_update(self) -> bool:
+        if self.frozen:
+            return False
         if self.step_count % self.cfg.update_every != 0:
             return False
         if len(self.buffer) < self.cfg.min_buffer_before_updates:

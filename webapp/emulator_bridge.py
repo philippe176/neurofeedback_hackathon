@@ -66,6 +66,7 @@ if importlib.util.find_spec("umap") is not None:
 AVAILABLE_TRAINING_PHASES = {
     "calibration": "Guided Calibration",
     "feedback": "Neurofeedback Coach",
+    "exploration": "Strategy Exploration",
 }
 
 TRAINING_PHASE_DESCRIPTIONS = {
@@ -76,6 +77,11 @@ TRAINING_PHASE_DESCRIPTIONS = {
     "feedback": (
         "Watch what the model thinks you are doing. If it reads the wrong task, "
         "change strategy until the prediction and zone both move where you want."
+    ),
+    "exploration": (
+        "Model is frozen. Focus on one movement class and explore different "
+        "strategies. The system will cluster your approaches and identify "
+        "which one the decoder reads most confidently."
     ),
 }
 
@@ -173,6 +179,13 @@ class EmulatorBridge:
         self._strategy_qualities: deque[float] = deque(maxlen=history_len)
         self._target_margins: deque[float] = deque(maxlen=history_len)
         self._last_viz_refit_sample = -1
+
+        self.exploration_target_class: int | None = None
+        self._exploration_penultimate: list[np.ndarray] = []
+        self._exploration_reanalyze_every: int = 10
+        self._exploration_last_analysis: int = 0
+        self._exploration_result: dict | None = None
+
         self._last_payload = self._build_waiting_payload()
 
         self.set_model(model_type)
@@ -199,6 +212,26 @@ class EmulatorBridge:
         if normalized not in AVAILABLE_TRAINING_PHASES:
             raise ValueError(f"Unknown training phase: {training_phase}")
         self.training_phase = normalized
+
+        if self.trainer is not None:
+            self.trainer.frozen = (normalized == "exploration")
+
+        if normalized == "exploration":
+            self._exploration_penultimate = []
+            self._exploration_last_analysis = 0
+            self._exploration_result = None
+            if self.exploration_target_class is None:
+                self.exploration_target_class = self.current_class if self.current_class is not None else 0
+        else:
+            self._exploration_result = None
+
+    def set_exploration_class(self, class_idx: int) -> None:
+        if class_idx not in range(4):
+            raise ValueError(f"Invalid class index: {class_idx}")
+        self.exploration_target_class = class_idx
+        self._exploration_penultimate = []
+        self._exploration_last_analysis = 0
+        self._exploration_result = None
 
     def set_model(self, model_type: str) -> None:
         normalized = str(model_type).strip().lower()
@@ -584,6 +617,7 @@ class EmulatorBridge:
             reward_provider=self.reward_provider,
             device=self.device,
         )
+        self.trainer.frozen = (self.training_phase == "exploration")
 
     def _ensure_decoder_ready(self, input_dim: int) -> None:
         input_dim = int(input_dim)
@@ -625,6 +659,47 @@ class EmulatorBridge:
             self._accuracies.append(last_acc)
 
         self._refresh_projected_history()
+
+        if (
+            self.training_phase == "exploration"
+            and self.exploration_target_class is not None
+            and sample.label == self.exploration_target_class
+        ):
+            self._exploration_penultimate.append(
+                np.asarray(result.penultimate, dtype=float).copy()
+            )
+            if len(self._exploration_penultimate) > 500:
+                self._exploration_penultimate = self._exploration_penultimate[-500:]
+            n = len(self._exploration_penultimate)
+            if n >= 20 and (n - self._exploration_last_analysis) >= self._exploration_reanalyze_every:
+                self._run_exploration_analysis()
+                self._exploration_last_analysis = n
+
+    def _run_exploration_analysis(self) -> None:
+        from model.exploration import analyze_strategies
+
+        if not self._exploration_penultimate or self.model is None:
+            self._exploration_result = None
+            return
+
+        penultimate = np.stack(self._exploration_penultimate, axis=0)
+        result = analyze_strategies(
+            penultimate=penultimate,
+            model=self.model,
+            target_class=self.exploration_target_class,
+            device=self.device,
+        )
+        self._exploration_result = result.to_dict() if result is not None else None
+
+    def _build_exploration_payload(self) -> dict | None:
+        if self.training_phase != "exploration":
+            return None
+        return {
+            "target_class": self.exploration_target_class,
+            "target_class_name": self._class_name(self.exploration_target_class),
+            "n_collected": len(self._exploration_penultimate),
+            "analysis": self._exploration_result,
+        }
 
     def _build_live_payload(self, sample: StreamSample, result: InferenceStep) -> dict[str, Any]:
         centroids = self._compute_centroids()
@@ -707,6 +782,7 @@ class EmulatorBridge:
                 "num_updates": self.trainer.num_updates if self.trainer else 0,
                 "labeled_seen": self.trainer.labeled_seen if self.trainer else 0,
             },
+            "exploration": self._build_exploration_payload(),
         }
 
     def _build_waiting_payload(self) -> dict[str, Any]:
@@ -771,6 +847,7 @@ class EmulatorBridge:
                 "num_updates": self.trainer.num_updates if self.trainer else 0,
                 "labeled_seen": self.trainer.labeled_seen if self.trainer else 0,
             },
+            "exploration": None,
         }
 
     def _build_stale_payload(self) -> dict[str, Any]:
@@ -797,6 +874,7 @@ class EmulatorBridge:
             "num_updates": self.trainer.num_updates if self.trainer else 0,
             "labeled_seen": self.trainer.labeled_seen if self.trainer else 0,
         }
+        payload["exploration"] = self._build_exploration_payload()
         return payload
 
     def _zone_snapshot(self, centroids: dict[int, np.ndarray]) -> dict[str, Any]:

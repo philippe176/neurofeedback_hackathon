@@ -43,6 +43,10 @@ class _ProjectionDecoderBase(nn.Module):
             projection=projection,
         )
 
+    def score_penultimate(self, penultimate: torch.Tensor) -> torch.Tensor:
+        """Given L2-normalized penultimate embeddings, return class probabilities."""
+        return torch.softmax(self.classifier_head(penultimate), dim=-1)
+
     def auxiliary_loss(self, out: ModelOutput, labels: torch.Tensor, cfg: ModelConfig) -> torch.Tensor:
         return out.logits.sum() * 0.0
 
@@ -212,6 +216,12 @@ class CEBRAMovementDecoder(_ProjectionDecoderBase):
             penultimate=penultimate,
             projection=projection,
         )
+
+    def score_penultimate(self, penultimate: torch.Tensor) -> torch.Tensor:
+        prototypes = F.normalize(self.class_prototypes, p=2, dim=-1)
+        logit_scale = self.temperature.exp().clamp(min=1.0, max=30.0)
+        logits = logit_scale * (penultimate @ prototypes.T)
+        return torch.softmax(logits, dim=-1)
 
     def auxiliary_loss(self, out: ModelOutput, labels: torch.Tensor, cfg: ModelConfig) -> torch.Tensor:
         return supervised_contrastive_loss(

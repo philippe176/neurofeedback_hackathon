@@ -259,6 +259,25 @@ def handle_set_viz_method(data):
     )
 
 
+@socketio.on("set_exploration_class")
+def handle_set_exploration_class(data):
+    class_idx = int((data or {}).get("class_idx", 0))
+    b = get_bridge()
+    try:
+        b.set_exploration_class(class_idx)
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+    emit(
+        "exploration_class_changed",
+        {
+            "class_idx": class_idx,
+            "class_name": b._class_name(class_idx),
+        },
+        broadcast=True,
+    )
+
+
 def streaming_loop():
     global is_streaming
 

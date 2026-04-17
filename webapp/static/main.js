@@ -43,6 +43,8 @@ let coachState = {};
 let sessionState = {};
 let latestData = null;
 let hasCustomSaveName = false;
+let explorationTargetClass = 0;
+let explorationState = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     initializeSocket();
@@ -106,6 +108,11 @@ function initializeSocket() {
     socket.on('centroid_window_changed', (data) => {
         centroidWindow = data.window;
         updateCentroidSlider();
+    });
+
+    socket.on('exploration_class_changed', (data) => {
+        explorationTargetClass = data.class_idx;
+        document.getElementById('exploration-class-select').value = data.class_idx;
     });
 
     socket.on('update', (data) => {
@@ -173,6 +180,11 @@ function initializeControls() {
         socket.emit('set_centroid_window', { window: centroidWindow });
     });
 
+    document.getElementById('exploration-class-select').addEventListener('change', (e) => {
+        explorationTargetClass = parseInt(e.target.value, 10);
+        socket.emit('set_exploration_class', { class_idx: explorationTargetClass });
+    });
+
     const saveInput = document.getElementById('save-model-name');
     saveInput.addEventListener('input', () => {
         hasCustomSaveName = saveInput.value.trim().length > 0 && saveInput.value !== buildDefaultSaveName();
@@ -225,6 +237,9 @@ function syncRuntimeState(data) {
     if (data.centroid_window) {
         centroidWindow = data.centroid_window;
     }
+    if (data.exploration !== undefined) {
+        explorationState = data.exploration;
+    }
 }
 
 function syncTrainingState(data) {
@@ -270,6 +285,7 @@ function renderPanels() {
     updateCalibrationPanel();
     updateSignalPanel();
     updateTrainingPanel();
+    updateExplorationPanel();
 }
 
 function updateConnectionStatus() {
@@ -445,6 +461,48 @@ function updateTrainingPanel() {
     document.getElementById('rl-enabled').textContent = training.rl_enabled ? 'Yes' : 'No';
 }
 
+function updateExplorationPanel() {
+    const panel = document.getElementById('exploration-panel');
+    if (trainingPhase !== 'exploration') {
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = '';
+
+    if (explorationState && explorationState.target_class !== null) {
+        document.getElementById('exploration-class-select').value = explorationState.target_class;
+    }
+
+    document.getElementById('exploration-count').textContent =
+        explorationState ? (explorationState.n_collected || 0) : 0;
+
+    const analysis = explorationState ? explorationState.analysis : null;
+    if (!analysis) {
+        document.getElementById('exploration-clusters').textContent = 'Collecting...';
+        document.getElementById('exploration-best').textContent = '--';
+        document.getElementById('exploration-cluster-list').innerHTML = '';
+        return;
+    }
+
+    document.getElementById('exploration-clusters').textContent = analysis.n_clusters;
+
+    const listEl = document.getElementById('exploration-cluster-list');
+    listEl.innerHTML = analysis.clusters.map((c) => `
+        <div class="key-metric${c.is_best ? ' highlight' : ''}">
+            <span class="metric-label">Strategy ${c.cluster_id + 1} (${c.size} pts)</span>
+            <span class="metric-value">${(c.confidence * 100).toFixed(1)}%${c.is_best ? ' ★' : ''}</span>
+        </div>
+    `).join('');
+
+    if (analysis.best_cluster_id !== null && analysis.best_cluster_id !== undefined) {
+        const best = analysis.clusters.find((c) => c.cluster_id === analysis.best_cluster_id);
+        document.getElementById('exploration-best').textContent =
+            `Strategy ${analysis.best_cluster_id + 1} (${(best.confidence * 100).toFixed(1)}%)`;
+    } else {
+        document.getElementById('exploration-best').textContent = 'No clear winner yet';
+    }
+}
+
 async function resetDecoder() {
     try {
         await fetch('/api/reset', { method: 'POST' });
@@ -608,6 +666,45 @@ function updateManifoldPlot(data) {
         name: 'Current',
         showlegend: false,
     });
+
+    if (trainingPhase === 'exploration' && explorationState && explorationState.analysis) {
+        const ea = explorationState.analysis;
+        const CLUSTER_COLORS = ['#c084fc', '#22d3ee', '#fb923c', '#a3e635', '#f472b6'];
+        for (let cid = 0; cid < ea.n_clusters; cid++) {
+            const clusterPts = ea.points_2d.filter((_, i) => ea.cluster_labels[i] === cid);
+            const cInfo = ea.clusters.find((c) => c.cluster_id === cid);
+            const color = CLUSTER_COLORS[cid % CLUSTER_COLORS.length];
+            traces.push({
+                x: clusterPts.map((p) => p[0]),
+                y: clusterPts.map((p) => p[1]),
+                mode: 'markers',
+                type: 'scatter',
+                name: `Strat ${cid + 1} (${(cInfo.confidence * 100).toFixed(0)}%)`,
+                marker: {
+                    color: color,
+                    size: cInfo.is_best ? 10 : 7,
+                    opacity: 0.7,
+                    symbol: cInfo.is_best ? 'star' : 'circle',
+                },
+            });
+            traces.push({
+                x: [cInfo.centroid_2d[0]],
+                y: [cInfo.centroid_2d[1]],
+                mode: 'markers+text',
+                type: 'scatter',
+                text: [`S${cid + 1}`],
+                textposition: 'top center',
+                textfont: { color: color, size: 11 },
+                marker: {
+                    color: color,
+                    size: 18,
+                    symbol: cInfo.is_best ? 'star' : 'diamond',
+                    line: { color: '#f8fafc', width: 2 },
+                },
+                showlegend: false,
+            });
+        }
+    }
 
     Plotly.react('manifold-plot', traces, manifoldLayout(), plotConfig());
 

@@ -59,6 +59,10 @@
                             <span class="option-title">Neurofeedback Coach</span>
                             <span class="option-copy">Use the model readout to decide whether to keep or change strategy.</span>
                         </button>
+                        <button class="btn btn-option btn-phase" data-phase="exploration">
+                            <span class="option-title">Strategy Exploration</span>
+                            <span class="option-copy">Freeze the model and discover which approach the decoder reads best for one task.</span>
+                        </button>
                     </div>
                     <div class="key-metric">
                         <span class="metric-label">Active Mode</span>
@@ -338,6 +342,37 @@
                     <div class="key-metric">
                         <span class="metric-label">RL Enabled</span>
                         <span id="rl-enabled" class="metric-value">No</span>
+                    </div>
+                </section>
+
+                <section id="exploration-panel" class="panel" style="display:none;">
+                    <div class="panel-header">
+                        <h2>Strategy Exploration</h2>
+                        <p id="exploration-message" class="panel-copy">
+                            Focus on one movement and try different approaches. The decoder will find your best strategy.
+                        </p>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Target Class</span>
+                        <select id="exploration-class-select" class="text-input">
+                            <option value="0">Left Hand</option>
+                            <option value="1">Right Hand</option>
+                            <option value="2">Left Leg</option>
+                            <option value="3">Right Leg</option>
+                        </select>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Samples Collected</span>
+                        <span id="exploration-count" class="metric-value">0</span>
+                    </div>
+                    <div class="key-metric">
+                        <span class="metric-label">Clusters Found</span>
+                        <span id="exploration-clusters" class="metric-value">--</span>
+                    </div>
+                    <div id="exploration-cluster-list" class="stack"></div>
+                    <div class="key-metric">
+                        <span class="metric-label">Best Strategy</span>
+                        <span id="exploration-best" class="metric-value">--</span>
                     </div>
                 </section>
             </aside>
