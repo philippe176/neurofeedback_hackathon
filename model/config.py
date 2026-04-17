@@ -47,9 +47,13 @@ class ModelConfig:
     contrastive_weight: float = 0.10
     contrastive_temperature: float = 0.50
 
-    latent_sep_margin: float = 2.0
-    projection_sep_margin: float = 1.2
-    classification_focal_gamma: float | None = 1.0  # Focal loss helps focus on hard examples
+    # Hierarchical clustering (V2 emulator)
+    lambda_coarse: float = 1.0             # Coarse 2-class head weight (cluster A vs B)
+    class_scale_gate: float = 0.2          # Below this, fine separation losses are soft-gated
+
+    latent_sep_margin: float = 1.5         # Reduced: within-cluster distance is ~1.5 in V2
+    projection_sep_margin: float = 0.8    # Reduced: smaller 2D range for fine classes
+    classification_focal_gamma: float | None = 1.0
     class_weights: tuple[float, ...] | None = None
 
     # Programmatic reward weights
@@ -123,6 +127,7 @@ class ModelConfig:
             "lambda_proj_compact",
             "lambda_proj_sep",
             "lambda_proj_temp",
+            "lambda_coarse",
         ):
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} must be >= 0")

@@ -105,6 +105,7 @@ class OnlineTrainer:
                 label=label_value,
                 action=pred,
                 reward=reward,
+                class_scale=float(sample.class_scale) if sample.class_scale is not None else 0.0,
             )
         )
 
@@ -166,16 +167,34 @@ class OnlineTrainer:
         y_np = np.array([exp.label for exp in batch], dtype=np.int64)
         a_np = np.array([exp.action for exp in batch], dtype=np.int64)
         r_np = np.array([exp.reward for exp in batch], dtype=np.float32)
+        scale_np = np.array([exp.class_scale for exp in batch], dtype=np.float32)
 
         x = torch.from_numpy(x_np).to(self.device, dtype=torch.float32)
         y = torch.from_numpy(y_np).to(self.device)
         actions = torch.from_numpy(a_np).to(self.device)
         rewards = torch.from_numpy(r_np).to(self.device)
 
+        # Soft gate: how much fine-grained losses should contribute
+        # When mean class_scale is low, fine losses are suppressed
+        mean_scale = float(scale_np[y_np >= 0].mean()) if (y_np >= 0).any() else 0.0
+        gate = self.cfg.class_scale_gate
+        fine_weight = min(1.0, max(0.0, mean_scale / gate)) if gate > 0 else 1.0
+
         self.model.train()
         out = self.model(x)
 
         class_weights = self.cfg.class_weight_tensor(self.device)
+
+        # --- Coarse 2-class loss (cluster A vs B) — always at full weight ---
+        coarse_labels = y.clone()
+        coarse_labeled_mask = y >= 0
+        # Map: {0,1} -> 0 (cluster A), {2,3} -> 1 (cluster B)
+        coarse_labels[coarse_labeled_mask] = (y[coarse_labeled_mask] >= 2).long()
+        coarse_loss = supervised_classification_loss(
+            out.coarse_logits, coarse_labels,
+        )
+
+        # --- Fine 4-class losses — gated by class_scale ---
         supervised = supervised_classification_loss(
             out.logits,
             y,
@@ -208,14 +227,17 @@ class OnlineTrainer:
         proj_temporal = class_conditional_temporal_loss(out.projection, y)
 
         manifold_supervised = (
-            self.cfg.lambda_cls * supervised
-            + self.cfg.lambda_compact * compact
-            + self.cfg.lambda_sep * sep
-            + self.cfg.lambda_temp * temporal
-            + self.cfg.lambda_proj_cls * projection_supervised
-            + self.cfg.lambda_proj_compact * proj_compact
-            + self.cfg.lambda_proj_sep * proj_sep
-            + self.cfg.lambda_proj_temp * proj_temporal
+            self.cfg.lambda_coarse * coarse_loss
+            + fine_weight * (
+                self.cfg.lambda_cls * supervised
+                + self.cfg.lambda_compact * compact
+                + self.cfg.lambda_sep * sep
+                + self.cfg.lambda_temp * temporal
+                + self.cfg.lambda_proj_cls * projection_supervised
+                + self.cfg.lambda_proj_compact * proj_compact
+                + self.cfg.lambda_proj_sep * proj_sep
+                + self.cfg.lambda_proj_temp * proj_temporal
+            )
         )
 
         labeled_in_batch = int((y >= 0).sum().item())

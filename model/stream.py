@@ -65,7 +65,11 @@ class ExperienceReplayBuffer:
             return combined[:n]
 
     def _balanced_draw(self, pool: list[Experience], n: int) -> list[Experience]:
-        """Draw *n* items from *pool* balancing across classes."""
+        """Draw *n* items from *pool* balancing across classes.
+
+        Within each class, samples with higher class_scale are preferred so
+        that training prioritises high-quality fine-signal observations.
+        """
         if n <= 0 or not pool:
             return []
 
@@ -87,7 +91,8 @@ class ExperienceReplayBuffer:
             for cls in classes:
                 indices = by_class[cls]
                 take = min(per_class, len(indices))
-                chosen = self._rng.choice(indices, size=take, replace=False).tolist()
+                weights = self._scale_weights(pool, indices)
+                chosen = self._rng.choice(indices, size=take, replace=False, p=weights).tolist()
                 selected_indices.extend(chosen)
 
             # Distribute remainder across classes with most samples
@@ -98,7 +103,8 @@ class ExperienceReplayBuffer:
                     all_remaining.extend(i for i in by_class[cls] if i not in used)
                 if all_remaining:
                     take = min(remainder, len(all_remaining))
-                    extra = self._rng.choice(all_remaining, size=take, replace=False).tolist()
+                    weights = self._scale_weights(pool, all_remaining)
+                    extra = self._rng.choice(all_remaining, size=take, replace=False, p=weights).tolist()
                     selected_indices.extend(extra)
         else:
             # No labeled data — draw uniformly from unlabeled
@@ -117,6 +123,14 @@ class ExperienceReplayBuffer:
                 selected_indices.extend(extra)
 
         return [pool[i] for i in selected_indices]
+
+    def _scale_weights(self, pool: list[Experience], indices: list[int]) -> np.ndarray:
+        """Compute sampling weights from class_scale. Higher scale → more likely."""
+        scales = np.array([max(0.05, pool[i].class_scale) for i in indices], dtype=np.float64)
+        total = scales.sum()
+        if total <= 0:
+            return np.ones(len(indices), dtype=np.float64) / len(indices)
+        return scales / total
 
     def labeled_count(self) -> int:
         with self._lock:

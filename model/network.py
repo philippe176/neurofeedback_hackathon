@@ -59,6 +59,9 @@ class _ProjectionDecoderBase(nn.Module):
             nn.Linear(embedding_dim, projection_dim),
         )
         self.projection_classifier_head = nn.Linear(projection_dim, n_classes)
+        # Coarse head: 2-class (cluster A vs cluster B)
+        # Cluster A = classes {0,1}, Cluster B = classes {2,3}
+        self.coarse_head = nn.Linear(embedding_dim, 2)
 
     def _finalize_output(self, penultimate: torch.Tensor) -> ModelOutput:
         penultimate = F.normalize(penultimate, p=2, dim=-1)
@@ -67,6 +70,8 @@ class _ProjectionDecoderBase(nn.Module):
         projection = self.projection_head(penultimate)
         projection_logits = self.projection_classifier_head(projection)
         projection_probs = torch.softmax(projection_logits, dim=-1)
+        coarse_logits = self.coarse_head(penultimate)
+        coarse_probs = torch.softmax(coarse_logits, dim=-1)
 
         return ModelOutput(
             logits=logits,
@@ -75,6 +80,8 @@ class _ProjectionDecoderBase(nn.Module):
             projection_probs=projection_probs,
             penultimate=penultimate,
             projection=projection,
+            coarse_logits=coarse_logits,
+            coarse_probs=coarse_probs,
         )
 
     def score_penultimate(self, penultimate: torch.Tensor) -> torch.Tensor:
@@ -247,6 +254,8 @@ class CEBRAMovementDecoder(_ProjectionDecoderBase):
         projection = self.projection_head(penultimate)
         projection_logits = self.projection_classifier_head(projection)
         projection_probs = torch.softmax(projection_logits, dim=-1)
+        coarse_logits = self.coarse_head(penultimate)
+        coarse_probs = torch.softmax(coarse_logits, dim=-1)
 
         return ModelOutput(
             logits=logits,
@@ -255,6 +264,8 @@ class CEBRAMovementDecoder(_ProjectionDecoderBase):
             projection_probs=projection_probs,
             penultimate=penultimate,
             projection=projection,
+            coarse_logits=coarse_logits,
+            coarse_probs=coarse_probs,
         )
 
     def score_penultimate(self, penultimate: torch.Tensor) -> torch.Tensor:

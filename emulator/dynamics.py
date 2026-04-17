@@ -46,19 +46,6 @@ from .config import DifficultyConfig
 
 
 # ---------------------------------------------------------------------------
-<<<<<<< HEAD
-# Class centroids in the 3-dim z_class subspace
-# hand vs leg: large gap (dim 0) → easy to separate
-# left vs right: moderate gap (dim 1) → needs more attention
-# dim 2: additional separation using diagonal structure
-# ---------------------------------------------------------------------------
-CLASS_CENTROIDS = np.array(
-    [
-        [ 2.0,  1.4,  0.5],   # 0 — left_hand
-        [ 2.0, -1.4, -0.5],   # 1 — right_hand
-        [-2.0,  1.4, -0.5],   # 2 — left_leg
-        [-2.0, -1.4,  0.5],   # 3 — right_leg
-=======
 # Class centroids in the 3-dim z_class subspace [coarse, fine_A, fine_B]
 # ---------------------------------------------------------------------------
 CLASS_CENTROIDS = np.array(
@@ -78,21 +65,12 @@ OPTIMAL_STRATEGIES = np.array(
         [-0.5, +0.5],   # 1 — right_hand
         [+0.5, -0.5],   # 2 — left_leg
         [-0.5, -0.5],   # 3 — right_leg
->>>>>>> Decode
     ],
     dtype=float,
 )
 
 # Integration time constant: class_scale builds up over ~SCALE_TAU seconds
-<<<<<<< HEAD
-# when strategy quality is high. Reduced for faster signal build-up.
-SCALE_TAU = 1.5
-
-# Minimum class scale - ensures signal is never fully suppressed
-MIN_CLASS_SCALE = 0.35
-=======
 SCALE_TAU = 3.0
->>>>>>> Decode
 
 N_CLASS_DIMS    = 3   # coarse + fine_A + fine_B
 N_STRATEGY_DIMS = 2
@@ -136,17 +114,7 @@ class LatentDynamics:
         self.z_noise    = np.zeros(N_NOISE_DIMS)
 
         self.current_class: int | None = None
-<<<<<<< HEAD
-
-        # --- Leaky integrator for class signal strength ---
-        # Initialize at minimum level so signal is immediately available
-        self._scale_integrated: float = MIN_CLASS_SCALE
-
-        # --- Background latent noise on z_class ---
-        # (small independent noise dims, always present regardless of difficulty)
-=======
         self._scale_integrated: float  = 0.0
->>>>>>> Decode
         self._noise_rng = rng
 
     # ------------------------------------------------------------------
@@ -190,14 +158,8 @@ class LatentDynamics:
         self.z_noise = (0.85 * self.z_noise
                         + self._noise_rng.normal(0, 0.25, N_NOISE_DIMS))
 
-<<<<<<< HEAD
-        # 5. Leaky integrator: class_scale rises when near (0,0), decays otherwise
-        # Use strategy_quality^2 instead of ^3 for more responsive signal build-up
-        target_scale           = self.strategy_quality ** 2
-=======
         # 5. Leaky integrator: class_scale rises when strategy quality is high
         target_scale           = self.strategy_quality ** 3
->>>>>>> Decode
         alpha                  = self.dt / SCALE_TAU
         self._scale_integrated += alpha * (target_scale - self._scale_integrated)
 
@@ -263,19 +225,6 @@ class LatentDynamics:
         """1.0 at the active class's optimal corner, 0 when no class active."""
         if self.current_class is None:
             return 0.0
-<<<<<<< HEAD
-        error = np.linalg.norm(self.z_strategy)
-        # More gradual decay: exp(-1.5 * error) instead of exp(-2.5 * error)
-        # At error=0.5: old=0.29, new=0.47
-        # At error=1.0: old=0.08, new=0.22
-        return float(np.exp(-1.5 * error))
-
-    @property
-    def class_scale(self) -> float:
-        """Integrated class signal scale. Always >= MIN_CLASS_SCALE for reliable signal."""
-        # Ensure minimum signal strength so classes are always somewhat distinguishable
-        return float(max(MIN_CLASS_SCALE, self._scale_integrated))
-=======
         error = np.linalg.norm(self.z_strategy - OPTIMAL_STRATEGIES[self.current_class])
         return float(np.exp(-2.5 * error))
 
@@ -290,4 +239,3 @@ class LatentDynamics:
         if self.current_class is None:
             return np.zeros(2)
         return OPTIMAL_STRATEGIES[self.current_class].copy()
->>>>>>> Decode
