@@ -108,8 +108,11 @@ class EmulatorBridge:
         stream_port: int = 5555,
         embedding_key: str = "data",
         receiver: StreamReceiver | None = None,
-        history_len: int = 300,
-        centroid_window: int = 50,
+        history_len: int = 480,
+        centroid_window: int = 120,
+        centroid_min_samples_per_class: int = 12,
+        display_window: int = 180,
+        display_min_samples_per_class: int = 24,
         model_type: str = "dnn",
         viz_method: str = "neural",
         viz_fit_window: int = 200,
@@ -121,6 +124,9 @@ class EmulatorBridge:
         self.embedding_key = embedding_key
         self.history_len = history_len
         self.centroid_window = centroid_window
+        self.centroid_min_samples_per_class = max(1, int(centroid_min_samples_per_class))
+        self.display_window = max(10, min(int(display_window), history_len))
+        self.display_min_samples_per_class = max(1, int(display_min_samples_per_class))
         self.viz_fit_window = max(10, min(viz_fit_window, history_len))
         self.viz_refit_every = max(1, viz_refit_every)
 
@@ -322,6 +328,9 @@ class EmulatorBridge:
             "session": session,
             "calibration": calibration,
             "coach": coach,
+            "display_window": self.display_window,
+            "display_min_samples_per_class": self.display_min_samples_per_class,
+            "centroid_min_samples_per_class": self.centroid_min_samples_per_class,
         }
 
     def step(self, timeout: float = 0.05) -> dict[str, Any]:
@@ -665,12 +674,16 @@ class EmulatorBridge:
             "points": list(self._points),
             "labels": [None if label is None else int(label) for label in self._labels],
             "predictions": list(self._preds),
+            "display_indices": self._display_indices(),
+            "display_window": self.display_window,
+            "display_min_samples_per_class": self.display_min_samples_per_class,
             "confidences": list(self._confs),
             "rewards": list(self._rewards),
             "agreements": list(self._agreements),
             "accuracies": list(self._accuracies),
             "centroids": {str(k): v.tolist() for k, v in centroids.items()},
             "centroid_window": self.centroid_window,
+            "centroid_min_samples_per_class": self.centroid_min_samples_per_class,
             "min_separation": min_sep,
             "mean_separation": mean_sep,
             "mean_spread": mean_spread,
@@ -733,12 +746,16 @@ class EmulatorBridge:
             "points": [],
             "labels": [],
             "predictions": [],
+            "display_indices": [],
+            "display_window": self.display_window,
+            "display_min_samples_per_class": self.display_min_samples_per_class,
             "confidences": [],
             "rewards": [],
             "agreements": [],
             "accuracies": [],
             "centroids": {},
             "centroid_window": self.centroid_window,
+            "centroid_min_samples_per_class": self.centroid_min_samples_per_class,
             "min_separation": 0.0,
             "mean_separation": 0.0,
             "mean_spread": 0.0,
@@ -816,9 +833,17 @@ class EmulatorBridge:
         if not self._points:
             return {}
 
-        window = min(self.centroid_window, len(self._points))
-        points_arr = np.asarray(list(self._points)[-window:], dtype=float)
-        labels_arr = self._plot_labels_array()[-window:]
+        labels_arr = self._plot_labels_array()
+        indices = self._window_indices_with_class_floor(
+            labels=labels_arr.tolist(),
+            window=self.centroid_window,
+            min_per_class=self.centroid_min_samples_per_class,
+        )
+        if not indices:
+            return {}
+
+        points_arr = np.asarray([self._points[idx] for idx in indices], dtype=float)
+        labels_arr = labels_arr[indices]
 
         centroids: dict[int, np.ndarray] = {}
         for cls in range(4):
@@ -831,9 +856,17 @@ class EmulatorBridge:
         if not self._points:
             return {}
 
-        window = min(self.centroid_window, len(self._points))
-        points_arr = np.asarray(list(self._points)[-window:], dtype=float)
-        labels = list(self._labels)[-window:]
+        labels = list(self._labels)
+        indices = self._window_indices_with_class_floor(
+            labels=labels,
+            window=self.centroid_window,
+            min_per_class=self.centroid_min_samples_per_class,
+        )
+        if not indices:
+            return {}
+
+        points_arr = np.asarray([self._points[idx] for idx in indices], dtype=float)
+        labels = [labels[idx] for idx in indices]
 
         centroids: dict[int, np.ndarray] = {}
         for cls in range(4):
@@ -860,9 +893,17 @@ class EmulatorBridge:
         if not self._points or not centroids:
             return 0.0
 
-        window = min(self.centroid_window, len(self._points))
-        points_arr = np.asarray(list(self._points)[-window:], dtype=float)
-        labels_arr = self._plot_labels_array()[-window:]
+        labels_arr = self._plot_labels_array()
+        indices = self._window_indices_with_class_floor(
+            labels=labels_arr.tolist(),
+            window=self.centroid_window,
+            min_per_class=self.centroid_min_samples_per_class,
+        )
+        if not indices:
+            return 0.0
+
+        points_arr = np.asarray([self._points[idx] for idx in indices], dtype=float)
+        labels_arr = labels_arr[indices]
 
         spreads = []
         for cls, centroid in centroids.items():
@@ -882,6 +923,36 @@ class EmulatorBridge:
 
     def _plot_labels_array(self) -> np.ndarray:
         return self._projection_labels()
+
+    def _display_indices(self) -> list[int]:
+        plot_labels = self._plot_labels_array()
+        return self._window_indices_with_class_floor(
+            labels=plot_labels.tolist(),
+            window=self.display_window,
+            min_per_class=self.display_min_samples_per_class,
+        )
+
+    def _window_indices_with_class_floor(
+        self,
+        labels: list[int | None],
+        window: int,
+        min_per_class: int,
+    ) -> list[int]:
+        total = len(labels)
+        if total == 0:
+            return []
+
+        start = max(0, total - max(1, int(window)))
+        selected = set(range(start, total))
+
+        for cls in range(4):
+            class_indices = [idx for idx, label in enumerate(labels) if label == cls]
+            if not class_indices:
+                continue
+            take = min(len(class_indices), max(1, int(min_per_class)))
+            selected.update(class_indices[-take:])
+
+        return sorted(selected)
 
     def _refresh_projected_history(self) -> None:
         if not self._neural_points:

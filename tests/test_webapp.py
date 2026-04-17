@@ -62,6 +62,22 @@ def make_training_samples(n_per_class: int = 16, dim: int = 16) -> list[StreamSa
     return samples
 
 
+def make_skewed_training_samples(dim: int = 16) -> list[StreamSample]:
+    samples: list[StreamSample] = []
+    idx = 0
+
+    for label in range(4):
+        for _ in range(24):
+            samples.append(make_sample(idx, label, dim=dim))
+            idx += 1
+
+    for _ in range(96):
+        samples.append(make_sample(idx, 0, dim=dim))
+        idx += 1
+
+    return samples
+
+
 def _checkpoint_dir() -> Path:
     path = Path(__file__).resolve().parents[1] / "test_artifacts" / "checkpoints"
     path.mkdir(parents=True, exist_ok=True)
@@ -121,6 +137,32 @@ def test_emulator_bridge_calibration_counts_and_training_progress():
     assert last["calibration"]["label_counts"]["0"] >= 12
     assert last["viz_method"] == "pca"
     assert len(last["points"]) == bridge.sample_count
+
+
+def test_emulator_bridge_keeps_other_classes_visible_during_skewed_calibration():
+    from webapp.emulator_bridge import EmulatorBridge
+
+    receiver = FakeReceiver(make_skewed_training_samples())
+    bridge = EmulatorBridge(
+        receiver=receiver,
+        centroid_window=40,
+        centroid_min_samples_per_class=12,
+        display_window=80,
+        display_min_samples_per_class=12,
+    )
+
+    last = None
+    for _ in range(192):
+        last = bridge.step(timeout=0.0)
+
+    assert last is not None
+    display_indices = last["display_indices"]
+    display_labels = [last["labels"][idx] for idx in display_indices]
+
+    for cls in range(4):
+        assert display_labels.count(cls) >= 12
+
+    assert len(last["centroids"]) == 4
 
 
 def test_emulator_bridge_can_switch_model_and_viz_before_samples():

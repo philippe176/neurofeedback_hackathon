@@ -36,7 +36,7 @@ let currentModelType = 'dnn';
 let currentModelName = 'DNN Decoder';
 let currentVizMethod = 'neural';
 let currentVizName = 'Neural Projection';
-let centroidWindow = 50;
+let centroidWindow = 120;
 let streamState = {};
 let calibrationState = {};
 let coachState = {};
@@ -523,13 +523,15 @@ function updateManifoldPlot(data) {
         }
         return label;
     });
-    const recentCount = Math.min(data.centroid_window || centroidWindow, points.length);
-    const recentPoints = points.slice(-recentCount);
-    const recentLabels = labels.slice(-recentCount);
+    const displayIndices = Array.isArray(data.display_indices) && data.display_indices.length
+        ? data.display_indices.filter((index) => index >= 0 && index < points.length)
+        : points.map((_, index) => index);
+    const displayPoints = displayIndices.map((index) => points[index]);
+    const displayLabels = displayIndices.map((index) => labels[index]);
     const traces = [];
 
     for (let cls = 0; cls < 4; cls += 1) {
-        const classPoints = recentPoints.filter((_, idx) => recentLabels[idx] === cls);
+        const classPoints = displayPoints.filter((_, idx) => displayLabels[idx] === cls);
         if (!classPoints.length) {
             continue;
         }
@@ -547,7 +549,7 @@ function updateManifoldPlot(data) {
         });
     }
 
-    const trajectory = recentPoints.slice(-24);
+    const trajectory = points.slice(-24);
     traces.push({
         x: trajectory.map((point) => point[0]),
         y: trajectory.map((point) => point[1]),
@@ -609,7 +611,11 @@ function updateManifoldPlot(data) {
 
     Plotly.react('manifold-plot', traces, manifoldLayout(), plotConfig());
 
-    document.getElementById('cluster-count').textContent = `Zones: ${Object.keys(centroids).length}/4`;
+    const displayCount = displayIndices.length;
+    const displayWindow = data.display_window || displayCount;
+    const classFloor = data.display_min_samples_per_class || 0;
+    document.getElementById('cluster-count').textContent =
+        `Zones: ${Object.keys(centroids).length}/4 | Showing ${displayCount}/${displayWindow} pts | Floor ${classFloor}/class`;
     document.getElementById('cluster-separation').textContent =
         `MinSep: ${formatFixed(data.min_separation)} | MeanSep: ${formatFixed(data.mean_separation)} | Spread: ${formatFixed(data.mean_spread)}`;
 }
