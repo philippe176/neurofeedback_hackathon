@@ -147,6 +147,31 @@ def _run_territory(model: ModelInterface, port: int) -> None:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     game_territory._game.running = False
+                elif event.key == pygame.K_0:
+                    game_territory._game._active_label = None
+                    game_territory._game._auto_mode    = False
+                elif event.key == pygame.K_1:
+                    game_territory._game._active_label = 0
+                    game_territory._game._auto_mode    = False
+                elif event.key == pygame.K_2:
+                    game_territory._game._active_label = 1
+                    game_territory._game._auto_mode    = False
+                elif event.key == pygame.K_3:
+                    game_territory._game._active_label = 2
+                    game_territory._game._auto_mode    = False
+                elif event.key == pygame.K_4:
+                    game_territory._game._active_label = 3
+                    game_territory._game._auto_mode    = False
+                elif event.key == pygame.K_r:
+                    game_territory._game._auto_mode = not game_territory._game._auto_mode
+                    if game_territory._game._auto_mode:
+                        game_territory._game._active_label = int(np.random.randint(0, 4))
+                        game_territory._game._cue_elapsed  = 0.0
+                    else:
+                        game_territory._game._active_label = None
+                elif event.key == pygame.K_s:
+                    if game_territory._game._game_time < game_territory.EXPLORE_PHASE:
+                        game_territory._game._game_time = game_territory.EXPLORE_PHASE
 
         probs      = _get_probs()
         label      = int(np.argmax(probs))
