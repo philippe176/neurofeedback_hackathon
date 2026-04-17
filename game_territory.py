@@ -435,6 +435,7 @@ class TerritoryGame:
         self._active_label: int | None = None   # cued intent (manual or auto)
         self._auto_mode:    bool        = False
         self._cue_elapsed:  float       = 0.0
+        self._ambiguous:    bool        = False  # True when player is inside >1 circle
 
         self._lda_method = "waiting"
         self._fonts_ready = False
@@ -511,11 +512,21 @@ class TerritoryGame:
         valid_centroids = {c: v for c, v in self._centroids.items()
                            if v is not None}
 
+        # Ambiguity safety: if the player is inside more than one circle,
+        # no capture counts regardless of cue — the signals are too mixed.
+        self._ambiguous = sum(
+            1 for cen in self._centroids.values()
+            if cen is not None and float(np.linalg.norm(smooth - cen)) < TERRITORY_R
+        ) > 1
+
         for cls, terr in self._territories.items():
             cen = self._centroids.get(cls)
             if cen is not None:
+                if self._ambiguous:
+                    cue_for_capture = "BLOCK"
+                else:
                     cue_for_capture = self._active_label if self._auto_mode else "BLOCK"
-                    terr.on_sample(smooth, cen, now, cue_for_capture)
+                terr.on_sample(smooth, cen, now, cue_for_capture)
 
         self._explore.on_sample(smooth, valid_centroids, now)
 
@@ -635,8 +646,17 @@ class TerritoryGame:
             # Progress arc (stability indicator)
             if level < 3:
                 prog = terr.progress(self._game_time)
+                player_here = (
+                    self._player_pos is not None and
+                    float(np.linalg.norm(self._player_pos - cen)) < TERRITORY_R
+                )
+                if self._ambiguous and player_here:
+                    arc_col = (190, 170, 40)   # warning yellow — overlapping circles
+                elif level == 2:
+                    arc_col = COL_GOLD
+                else:
+                    arc_col = COL_WHITE
                 if prog > 0:
-                    arc_col = COL_GOLD if level == 2 else COL_WHITE
                     _draw_arc_progress(screen, arc_col, (cx, cy),
                                        r_px + 6, prog, width=4)
 
